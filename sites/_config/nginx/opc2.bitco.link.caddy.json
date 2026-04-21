@@ -1,0 +1,1 @@
+{"match":[{"host":["opc2.bitco.link"]}],"handle":[{"handler":"subroute","routes":[{"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:9080"}],"headers":{"request":{"set":{"X-Forwarded-Proto":["https"],"X-Real-IP":["{http.request.remote.host}"]}}}}]}]}],"terminal":true}

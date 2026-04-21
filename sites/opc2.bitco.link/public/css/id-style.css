@@ -1,0 +1,44 @@
+body {
+	background:#e6e6e6;
+}
+.lang {
+	color:white;
+	font-size:120%;
+}
+#page-wrapper {
+	margin:0px;
+}
+div.lang {
+	color:white;font-weight:bold;
+	position:absolute;top:15px;right:25px;text-align:right;
+	cursor:pointer;
+}	
+	div.lang div {
+		padding: 5px;
+		opacity:0.4;
+		border:none;border-radius: 5px;
+		display: inline-block;
+		margin-left: 5px;
+		font-weight: normal;
+		font-size: 70%;
+	}
+		div.lang div img.inactive {
+			display:block;
+		}
+		div.lang div img.active {
+			display:none;
+		}
+	div.lang div.active {
+		opacity:1;
+	}
+		div.lang div.active img.inactive {
+			display:none;
+		}
+		div.lang div.active img.active {
+			display:block;
+		}
+	
+
+.margin-bottom-30 {
+	margin-bottom:30px;
+}

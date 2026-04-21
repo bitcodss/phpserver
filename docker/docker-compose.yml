@@ -1,0 +1,108 @@
+
+services:
+  php74:
+    build:
+      context: ./php
+      dockerfile: Dockerfile
+    container_name: cid-php74
+    restart: unless-stopped
+    volumes:
+      - ../sites:/var/www/sites
+      - ./php/conf/php-custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
+      - ./php/conf/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    networks:
+      - cid-network
+    environment:
+      - TZ=Asia/Bangkok
+    depends_on:
+      - mariadb
+      - redis
+
+  nginx:
+    image: nginx:1.24-alpine
+    container_name: cid-nginx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9080:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../sites:/var/www/sites
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - cid-network
+    depends_on:
+      - php74
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: cid-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-CidMariaDB2026!}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-opc_db}
+      MYSQL_USER: ${MYSQL_USER:-opc_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-OpcUser2026!}
+      TZ: Asia/Bangkok
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./logs/mariadb:/var/log/mysql
+    networks:
+      - cid-network
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=256M
+      --max-connections=100
+      --slow-query-log=1
+      --slow-query-log-file=/var/log/mysql/slow.log
+      --long-query-time=2
+
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    container_name: cid-phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9081:80"
+    environment:
+      PMA_HOST: mariadb
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 64M
+      TZ: Asia/Bangkok
+    networks:
+      - cid-network
+    depends_on:
+      - mariadb
+
+  redis:
+    image: redis:7-alpine
+    container_name: cid-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - cid-network
+
+  sftp:
+    image: atmoz/sftp:alpine
+    container_name: cid-sftp
+    restart: unless-stopped
+    ports:
+      - "2222:22"
+    volumes:
+      - ../sites:/home/webmaster/sites
+    command: "webmaster:CidSFTP2026!:1000:1000"
+    networks:
+      - cid-network
+
+volumes:
+  mariadb-data:
+  redis-data:
+
+networks:
+  cid-network:
+    name: cid-network
+    driver: bridge

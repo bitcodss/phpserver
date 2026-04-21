@@ -1,0 +1,14 @@
+{
+    "domain": "opc2.bitco.link",
+    "label": "Test App",
+    "description": "Test App with survey",
+    "created": "2026-04-14 01:11:51",
+    "php": "7.4",
+    "docroot": "\/var\/www\/sites\/opc2.bitco.link\/public",
+    "database": {
+        "database": "test",
+        "user": "test",
+        "password": "(existing)"
+    },
+    "ssl": "auto (Caddy)"
+}

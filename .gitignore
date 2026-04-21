@@ -1,0 +1,27 @@
+# Environment secrets
+docker/.env
+
+# Logs
+docker/logs/
+
+# Runtime data
+docker/database/*.sql.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# OpenClaw workspace state
+.openclaw/
+
+# Memory (agent-specific)
+memory/
+
+# Agent config files (not part of the stack)
+SOUL.md
+IDENTITY.md
+USER.md
+TOOLS.md
+AGENTS.md
+HEARTBEAT.md
+BOOTSTRAP.md
