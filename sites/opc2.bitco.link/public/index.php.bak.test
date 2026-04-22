@@ -1,4 +1,0 @@
-<?php
-echo "<h1>Test App</h1>";
-echo "<p>PHP " . phpversion() . " — Managed by ศ.Cid</p>";
-echo "<p>" . date('Y-m-d H:i:s T') . "</p>";
