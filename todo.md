@@ -26,20 +26,32 @@ Mark `[x]` once the task is done **and** committed. One commit per phase.
 - [x] `admin/index.php` — return 401 on bad credentials (signal for fail2ban).
 - [x] `docker exec cid-nginx nginx -t && nginx -s reload`.
 - [x] Verify: 16-case matrix — all bad UAs/queries/URIs/methods → 403; legit traffic + admin login → 200/302/401 as expected.
-- [ ] Commit phase 1.
+- [x] Commit phase 1 (`e78dd22` — bundled with prior session's audit/infra work).
 
 ## Phase 2 — Host-level protections (Tier 2)
 
-- [ ] Confirm key-based SSH works in a second session before touching sshd.
-- [ ] `apt install fail2ban`.
-- [ ] Drop `/etc/fail2ban/jail.local` with the four jails (sshd, sftp, nginx-admin, nginx-8g).
-- [ ] Drop `/etc/fail2ban/filter.d/nginx-admin.conf` and `nginx-8g.conf`.
-- [ ] Add the user's current IP to `ignoreip`.
-- [ ] `systemctl enable --now fail2ban`. Confirm `fail2ban-client status` shows 4 jails.
-- [ ] Trigger 5 bad logins against sshd from a test IP, confirm ban (`fail2ban-client status sshd`).
-- [ ] Trigger 5 bad sftp logins from a test IP, confirm ban (`fail2ban-client status sftp`).
-- [ ] Drop `/etc/ssh/sshd_config.d/99-hardening.conf`.
-- [ ] `sshd -t` — confirm config syntax.
-- [ ] `systemctl reload sshd`.
-- [ ] In a third SSH window, attempt to log in with password — must fail; key login must succeed.
-- [ ] Commit phase 2 (or note as host-only, not in repo).
+- [x] Confirm key-based SSH works — verified from `/var/log/auth.log`: every recent login from 192.168.3.51 is `Accepted publickey` with ED25519 `oZv0mow5CUfEA…`.
+- [x] `apt install fail2ban` (v1.0.2 installed).
+- [x] Drop `/etc/fail2ban/jail.local` with the four jails (sshd, sftp, nginx-admin, nginx-8g).
+- [x] Drop `/etc/fail2ban/filter.d/nginx-admin.conf` and `nginx-8g.conf`.
+- [x] Add LAN ranges (127.0.0.1/8, ::1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12) to `ignoreip`.
+- [x] `systemctl enable --now fail2ban`. Confirmed `fail2ban-client status` shows 4 jails.
+- [x] Trigger 6 fake 401s from 9.9.9.9 → nginx-admin banned 9.9.9.9 ✓.
+- [x] Trigger 11 fake 403s from 4.4.4.4 → nginx-8g banned 4.4.4.4 ✓.
+- [x] Drop `/etc/ssh/sshd_config.d/99-hardening.conf`.
+- [x] `sshd -t` passed.
+- [x] `systemctl reload ssh` (Debian unit is `ssh`, not `sshd`).
+- [x] Password auth refused: `ssh -o PreferredAuthentications=password localhost` → `Authentications that can continue: publickey` (no `password` in the list any more).
+- [x] Commit phase 2 — host-only changes are noted in this file; repo gets the updated `todo.md`.
+
+## Host artifacts deployed (not in repo)
+
+The following files live on the host outside the git tree; mirror them via
+`ansible` / `cloud-init` / your config-management of choice for reproducibility.
+
+- `/etc/fail2ban/jail.local` — 4-jail policy
+- `/etc/fail2ban/filter.d/nginx-admin.conf` — POST /admin/ + 401
+- `/etc/fail2ban/filter.d/nginx-8g.conf` — *.access.log + 403
+- `/etc/ssh/sshd_config.d/99-hardening.conf` — SSH hardening drop-in
+
+To roll back SSH hardening: `sudo rm /etc/ssh/sshd_config.d/99-hardening.conf && sudo systemctl reload ssh`.
