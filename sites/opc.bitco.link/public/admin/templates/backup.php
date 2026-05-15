@@ -1,7 +1,18 @@
 <?php
 /**
- * Backup tab — Jobs + Snapshots + per-job runs viewer.
- * All work is done client-side via /admin/api/backup.php.
+ * Backup tab — Jobs grouped by kind, snapshots nested inside each job.
+ *
+ * UX details:
+ * - localStorage cache (10-min TTL) so reopening the tab is instant; manual
+ *   "Refresh" bypasses the cache.
+ * - Loading state shows a status line + skeleton rows instead of an empty
+ *   "loading…" cell.
+ * - Per-job expander shows the snapshots that belong to that job (newest
+ *   first) plus the last-20 run history.
+ * - Separate sections: 📊 Database backups · 🌐 Site backups · 🔍 Integrity
+ *   check · 🗄️ Legacy snapshots (no job tag).
+ * - Action column: Run / Edit / × (no duplicate "Runs" — history is inside
+ *   the expansion).
  */
 ?>
 <h2 class="page-title">🗄️ Backup</h2>
@@ -12,40 +23,72 @@
             <strong>Integrity check (weekly):</strong>
             <span id="checkStatus" style="color:var(--muted)">…</span>
         </div>
-        <button class="btn btn-sm btn-primary" onclick="refreshAll()">🔄 Refresh</button>
+        <div style="display:flex;gap:10px;align-items:center">
+            <span id="cacheState" style="color:var(--muted);font-size:0.8rem">…</span>
+            <button class="btn btn-sm btn-primary" onclick="refreshAll(true)">🔄 Refresh</button>
+        </div>
     </div>
 </div>
 
-<!-- ============================== JOBS ============================== -->
-<div style="margin-bottom: 16px;display:flex;justify-content:space-between;align-items:center">
-    <h3>Jobs</h3>
-    <button class="btn btn-primary" onclick="openJobModal()">+ Add Job</button>
+<!-- ============================ DATABASE JOBS ============================ -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <h3>📊 Database backups</h3>
+    <button class="btn btn-sm btn-primary" onclick="openJobModal('db')">+ Add DB job</button>
 </div>
 <div class="table-wrap" style="margin-bottom:24px">
     <table>
         <thead><tr>
-            <th>Label</th><th>Kind</th><th>Target</th><th>Schedule</th>
-            <th>Last run</th><th>On</th><th style="width:200px">Actions</th>
+            <th style="width:30px"></th>
+            <th>Label</th><th>Database</th><th>Schedule</th><th>Retention</th>
+            <th>Last run</th><th>On</th><th style="width:180px">Actions</th>
         </tr></thead>
-        <tbody id="jobsBody"><tr><td colspan="7" style="color:var(--muted)">loading…</td></tr></tbody>
+        <tbody id="dbJobsBody"><tr><td colspan="8" style="color:var(--muted)">loading…</td></tr></tbody>
     </table>
 </div>
 
-<!-- ============================ SNAPSHOTS =========================== -->
-<div style="margin-bottom: 12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-    <h3>Snapshots</h3>
-    <div style="display:flex;gap:8px">
-        <select id="filterJob" onchange="renderSnapshots()" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
-            <option value="">All jobs</option>
-        </select>
-    </div>
+<!-- ============================== SITE JOBS ============================== -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <h3>🌐 Site backups</h3>
+    <button class="btn btn-sm btn-primary" onclick="openJobModal('site')">+ Add site job</button>
 </div>
-<div class="table-wrap">
+<div class="table-wrap" style="margin-bottom:24px">
     <table>
         <thead><tr>
-            <th>Time</th><th>Job</th><th>Kind</th><th>Size</th><th style="width:260px">Actions</th>
+            <th style="width:30px"></th>
+            <th>Label</th><th>Site</th><th>Schedule</th><th>Retention</th>
+            <th>Last run</th><th>On</th><th style="width:180px">Actions</th>
         </tr></thead>
-        <tbody id="snapsBody"><tr><td colspan="5" style="color:var(--muted)">loading…</td></tr></tbody>
+        <tbody id="siteJobsBody"><tr><td colspan="8" style="color:var(--muted)">loading…</td></tr></tbody>
+    </table>
+</div>
+
+<!-- ============================= SYSTEM CHECK ============================ -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <h3>🔍 Integrity check</h3>
+    <span style="color:var(--muted);font-size:0.8rem" title="restic check --read-data-subset=5% — 5% of stored data is verified each week. Full dataset cycles through in ~20 weeks.">5% subset/week → ~20 weeks for full coverage</span>
+</div>
+<div class="table-wrap" style="margin-bottom:24px">
+    <table>
+        <thead><tr>
+            <th style="width:30px"></th>
+            <th>Label</th><th>Schedule</th><th>Last run</th><th>On</th>
+            <th style="width:120px">Actions</th>
+        </tr></thead>
+        <tbody id="sysJobsBody"><tr><td colspan="6" style="color:var(--muted)">loading…</td></tr></tbody>
+    </table>
+</div>
+
+<!-- ============================= LEGACY POOL ============================= -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <h3>🗄️ Legacy snapshots <small style="color:var(--muted);font-weight:normal">(not attached to any job)</small></h3>
+</div>
+<div class="table-wrap" style="margin-bottom:24px">
+    <table>
+        <thead><tr>
+            <th>Time</th><th>Kind</th><th>Snapshot</th><th>Paths</th>
+            <th style="width:200px">Actions</th>
+        </tr></thead>
+        <tbody id="legacyBody"><tr><td colspan="5" style="color:var(--muted)">loading…</td></tr></tbody>
     </table>
 </div>
 
@@ -71,7 +114,7 @@
     <div class="form-group" id="dbTablesGroup">
       <label>Tables (leave empty for all)</label>
       <select id="jobTables" multiple size="6" style="height:auto"></select>
-      <small style="color:var(--muted)">Hold Ctrl/Cmd to multi-select.</small>
+      <small id="tablesHint" style="color:var(--muted)">Hold Ctrl/Cmd to multi-select.</small>
     </div>
     <div class="form-group" id="siteTargetGroup" style="display:none">
       <label>Site</label>
@@ -104,7 +147,9 @@
       <input id="jobRetention" type="number" min="1" max="3650" value="30" style="width:140px">
     </div>
     <div class="form-group">
-      <label><input id="jobEnabled" type="checkbox" checked> Enabled</label>
+      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);font-size:0.95rem;margin-bottom:0">
+        <input id="jobEnabled" type="checkbox" checked style="width:auto;margin:0"> Enabled
+      </label>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="closeJobModal()" style="background:var(--border);color:var(--text)">Cancel</button>
@@ -113,23 +158,16 @@
   </div>
 </div>
 
-<!-- =========================== RUNS MODAL =========================== -->
-<div id="runsModal" class="modal-bg">
-  <div class="modal" style="max-width:820px">
-    <h3 id="runsModalTitle">Recent runs</h3>
-    <div id="runsBody" style="max-height:60vh;overflow-y:auto"></div>
-    <div style="display:flex;justify-content:flex-end;margin-top:16px">
-      <button class="btn" onclick="closeRunsModal()" style="background:var(--border);color:var(--text)">Close</button>
-    </div>
-  </div>
-</div>
-
 <script>
+const CACHE_KEY = 'cid-backup-cache-v1';
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
 let _jobs = [];
 let _state = { runs: {} };
 let _snaps = [];
 let _editingId = null;
 let _targets = { databases: [], sites: [] };
+let _expanded = new Set(); // job ids whose expansion panel is open
 
 function api(action, payload={}) {
   return apiCall('backup.php', Object.assign({action}, payload));
@@ -140,7 +178,7 @@ function fmtTime(s) {
   return d.toLocaleString('en-GB', {hour12:false}).replace(',', '');
 }
 function fmtSize(n) {
-  if (!n && n !== 0) return '–';
+  if (n == null) return '–';
   if (n < 1024) return n + ' B';
   if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
   if (n < 1024*1024*1024) return (n/1024/1024).toFixed(1) + ' MB';
@@ -149,138 +187,291 @@ function fmtSize(n) {
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function setCacheLabel(msg) {
+  const el = document.getElementById('cacheState');
+  if (el) el.textContent = msg;
+}
 
-async function refreshAll() {
-  const [jobs, runs, snaps] = await Promise.all([
-    api('jobs-get'), api('runs'), api('snapshots'),
-  ]);
-  _jobs  = jobs?.jobs ?? [];
-  _state = { runs: runs?.runs ?? {} };
-  _snaps = snaps?.snapshots ?? [];
-  renderJobs();
-  renderSnapshots();
+// ----- cache ------------------------------------------------------------
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj.ts !== 'number') return null;
+    if (Date.now() - obj.ts > CACHE_TTL_MS) return null;
+    return obj;
+  } catch (e) { return null; }
+}
+function saveCache(jobs, state, snaps) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      ts: Date.now(),
+      jobs, state, snaps,
+    }));
+  } catch (e) {}
+}
+
+function applyData(jobs, state, snaps) {
+  _jobs = jobs ?? [];
+  _state = { runs: (state && state.runs) || {} };
+  _snaps = snaps ?? [];
+  render();
+}
+
+async function refreshAll(force=false) {
+  if (!force) {
+    const c = loadCache();
+    if (c) {
+      applyData(c.jobs, c.state, c.snaps);
+      const ageMin = Math.floor((Date.now() - c.ts) / 60000);
+      setCacheLabel(`cached (${ageMin}m ago)`);
+      return;
+    }
+  }
+  setCacheLabel('fetching…');
+  try {
+    const [jr, rr, sr] = await Promise.all([
+      api('jobs-get'), api('runs'), api('snapshots'),
+    ]);
+    const jobs = jr?.jobs ?? [];
+    const state = { runs: rr?.runs ?? {} };
+    const snaps = sr?.snapshots ?? [];
+    applyData(jobs, state.runs ? state : {runs:{}}, snaps);
+    saveCache(jobs, state, snaps);
+    setCacheLabel('just now');
+  } catch (e) {
+    setCacheLabel('fetch failed');
+    showToast('refresh failed: ' + (e?.message || e), 'error');
+  }
+}
+
+// ----- rendering --------------------------------------------------------
+function lastRunOf(jobId) {
+  return _state.runs?.[jobId]?.history?.slice(-1)[0] ?? null;
+}
+function isMissed(job) {
+  const last = lastRunOf(job.id);
+  if (!last || !job.enabled || !job.schedule) return false;
+  const parts = job.schedule.split(' ');
+  const kind = parts[0];
+  const intervalH = {daily:24, weekly:24*7, monthly:24*30}[kind] || 24;
+  // Very rough — server computes the authoritative version; UI just hints.
+  const lastTs = new Date(last.started_at).getTime();
+  return Date.now() - lastTs > intervalH * 3600 * 1000 * 1.5;
+}
+function lastRunBadge(jobId) {
+  const last = lastRunOf(jobId);
+  if (!last) return '<span style="color:var(--muted)">never</span>';
+  return last.status === 'ok'
+    ? `<span class="badge badge-ok" title="${esc(last.started_at)}">${esc(fmtTime(last.ended_at))}</span>`
+    : `<span class="badge badge-err" title="${esc(last.stderr_tail||'')}">✗ ${esc(fmtTime(last.ended_at))}</span>`;
+}
+
+function jobRowHTML(j, kind) {
+  // kind: 'db' | 'site' | 'system_check' — controls column shape.
+  const expanded = _expanded.has(j.id);
+  const expander = `<span style="cursor:pointer;font-size:0.9rem" onclick="toggleExpand('${esc(j.id)}')" title="show snapshots + run history">${expanded ? '▼' : '▶'}</span>`;
+  const last = lastRunBadge(j.id);
+  const missed = isMissed(j) ? ' <span class="badge badge-warn" title="last run is older than 1.5× the schedule interval">missed</span>' : '';
+  const onBadge = j.enabled
+    ? '<span class="badge badge-ok">on</span>'
+    : '<span class="badge badge-warn">off</span>';
+
+  let actions = `<button class="btn btn-sm btn-primary" onclick="runJob('${esc(j.id)}')">Run</button>`;
+  if (kind !== 'system_check') {
+    actions += ` <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="editJob('${esc(j.id)}')">Edit</button>`;
+    actions += ` <button class="btn btn-sm btn-danger" onclick="deleteJob('${esc(j.id)}')" title="Delete job">×</button>`;
+  }
+
+  let mainRow;
+  if (kind === 'system_check') {
+    mainRow = `<tr>
+      <td>${expander}</td>
+      <td><strong>${esc(j.label)}</strong></td>
+      <td><code>${esc(j.schedule)}</code></td>
+      <td>${last}${missed}</td>
+      <td>${onBadge}</td>
+      <td>${actions}</td>
+    </tr>`;
+  } else {
+    const target = kind === 'db' ? esc(j.database) : esc(j.site);
+    mainRow = `<tr>
+      <td>${expander}</td>
+      <td><strong>${esc(j.label)}</strong></td>
+      <td>${target}${kind === 'db' && j.tables?.length ? `<br><small style="color:var(--muted)">${j.tables.length} table${j.tables.length===1?'':'s'} only</small>` : ''}</td>
+      <td><code>${esc(j.schedule)}</code></td>
+      <td>${esc(j.retention_days)} d</td>
+      <td>${last}${missed}</td>
+      <td>${onBadge}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }
+
+  if (!expanded) return mainRow;
+  return mainRow + expandedRowHTML(j, kind);
+}
+
+function expandedRowHTML(j, kind) {
+  const colspan = kind === 'system_check' ? 6 : 8;
+  // Snapshots belonging to this job, newest first
+  let snapsHTML = '';
+  if (kind !== 'system_check') {
+    const mine = _snaps
+      .filter(s => s.job_id === j.id)
+      .sort((a,b) => (b.time||'').localeCompare(a.time||''));
+    if (!mine.length) {
+      snapsHTML = '<p style="color:var(--muted);margin:0">No snapshots yet for this job.</p>';
+    } else {
+      snapsHTML = `<table style="width:100%">
+        <thead><tr><th>Time</th><th>Snapshot</th><th>Size</th><th style="width:240px">Actions</th></tr></thead>
+        <tbody>` + mine.map(s => {
+          // Try to find the size for this snapshot from history.
+          const hist = _state.runs?.[j.id]?.history || [];
+          const match = hist.find(h => h.snapshot_id === s.id);
+          const size = match?.size_bytes;
+          const isDb = kind === 'db';
+          return `<tr>
+            <td>${esc(fmtTime(s.time))}</td>
+            <td><code>${esc(s.id)}</code></td>
+            <td>${size != null ? esc(fmtSize(size)) : '<span style="color:var(--muted)">?</span>'}</td>
+            <td>
+              <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="restoreSnap('${esc(s.id)}')">Restore</button>
+              ${isDb ? `<a class="btn btn-sm btn-primary" href="/admin/api/backup.php?action=download&snapshot_id=${esc(s.id)}" download>Download</a>` : ''}
+              <button class="btn btn-sm btn-danger" onclick="forgetSnap('${esc(s.id)}')">×</button>
+            </td>
+          </tr>`;
+        }).join('') + '</tbody></table>';
+    }
+  }
+
+  // Run history
+  const hist = (_state.runs?.[j.id]?.history || []).slice().reverse();
+  let histHTML;
+  if (!hist.length) {
+    histHTML = '<p style="color:var(--muted);margin:0">No runs yet.</p>';
+  } else {
+    histHTML = hist.map(r => `
+      <details style="border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:6px">
+        <summary style="cursor:pointer">
+          ${r.status === 'ok' ? '<span class="badge badge-ok">ok</span>' : '<span class="badge badge-err">error</span>'}
+          ${esc(fmtTime(r.started_at))} → ${esc(fmtTime(r.ended_at))}
+          ${r.size_bytes != null ? ' · ' + esc(fmtSize(r.size_bytes)) : ''}
+          ${r.snapshot_id ? ' · <code>' + esc(r.snapshot_id) + '</code>' : ''}
+        </summary>
+        ${r.stdout_tail ? '<details style="margin-top:6px"><summary>stdout</summary><pre class="log-output">' + esc(r.stdout_tail) + '</pre></details>' : ''}
+        ${r.stderr_tail ? '<details style="margin-top:4px"><summary>stderr</summary><pre class="log-output">' + esc(r.stderr_tail) + '</pre></details>' : ''}
+      </details>`).join('');
+  }
+
+  const incrementalNote = kind === 'db'
+    ? '<small style="color:var(--muted);display:block;margin-top:6px">DB dumps are full each run, but restic\'s content-defined chunking deduplicates unchanged data — so on B2 storage the effect is incremental.</small>'
+    : '';
+
+  return `<tr><td colspan="${colspan}" style="background:var(--bg);padding:14px 20px 18px">
+    ${snapsHTML ? `<h4 style="margin:0 0 8px">Snapshots (newest first)</h4>${snapsHTML}${incrementalNote}` : ''}
+    <h4 style="margin:${snapsHTML ? '16px' : '0'} 0 8px">Run history (last 20)</h4>
+    ${histHTML}
+  </td></tr>`;
+}
+
+function toggleExpand(jobId) {
+  if (_expanded.has(jobId)) _expanded.delete(jobId);
+  else _expanded.add(jobId);
+  render();
+}
+
+function render() {
   renderCheckStatus();
+  renderSection('dbJobsBody',   _jobs.filter(j => j.kind === 'db'),           'db',           8, 'No DB jobs yet. Add one with the button above.');
+  renderSection('siteJobsBody', _jobs.filter(j => j.kind === 'site'),         'site',         8, 'No site jobs yet. Site backups are opt-in.');
+  renderSection('sysJobsBody',  _jobs.filter(j => j.kind === 'system_check'), 'system_check', 6, '');
+  renderLegacy();
+}
+
+function renderSection(tbodyId, jobs, kind, colspan, emptyMsg) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  if (!jobs.length) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" style="color:var(--muted)">${esc(emptyMsg)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = jobs.map(j => jobRowHTML(j, kind)).join('');
+}
+
+function renderLegacy() {
+  const tbody = document.getElementById('legacyBody');
+  const orphans = _snaps
+    .filter(s => !s.job_id)
+    .sort((a,b) => (b.time||'').localeCompare(a.time||''));
+  if (!orphans.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">No legacy snapshots.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = orphans.map(s => `
+    <tr>
+      <td>${esc(fmtTime(s.time))}</td>
+      <td>${esc((s.tags && s.tags[0]) || '–')}</td>
+      <td><code>${esc(s.id)}</code></td>
+      <td><small style="color:var(--muted)">${esc((s.paths || []).join(', '))}</small></td>
+      <td>
+        <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="restoreSnap('${esc(s.id)}')">Restore</button>
+        <button class="btn btn-sm btn-danger" onclick="forgetSnap('${esc(s.id)}')">×</button>
+      </td>
+    </tr>`).join('');
 }
 
 function renderCheckStatus() {
   const r = _state.runs?.__system_check__?.history?.slice(-1)[0];
   const el = document.getElementById('checkStatus');
+  if (!el) return;
   if (!r) { el.textContent = 'never run yet'; el.style.color='var(--muted)'; return; }
   if (r.status === 'ok') {
-    el.innerHTML = `<span class="badge badge-ok">✓ ${esc(fmtTime(r.ended_at))}</span>
-      <span title="5% of stored data is verified each week; full coverage in ~20 weeks." style="color:var(--muted);margin-left:6px">5% subset verified weekly</span>`;
+    el.innerHTML = `<span class="badge badge-ok">✓ ${esc(fmtTime(r.ended_at))}</span>`;
   } else {
     el.innerHTML = `<span class="badge badge-err">✗ FAILED at ${esc(fmtTime(r.ended_at))}</span>`;
   }
 }
 
-function renderJobs() {
-  const tbody = document.getElementById('jobsBody');
-  if (!_jobs.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">No jobs yet. Add one.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = _jobs.map(j => {
-    const last = _state.runs?.[j.id]?.history?.slice(-1)[0];
-    const lastBadge = !last ? '<span style="color:var(--muted)">never</span>'
-      : last.status === 'ok'
-        ? `<span class="badge badge-ok">${esc(fmtTime(last.ended_at))}</span>`
-        : `<span class="badge badge-err">✗ ${esc(fmtTime(last.ended_at))}</span>`;
-    const target = j.kind === 'db' ? esc(j.database)
-                 : j.kind === 'site' ? esc(j.site)
-                 : '<i>—</i>';
-    const sys = j.kind === 'system_check';
-    return `<tr>
-      <td><strong>${esc(j.label)}</strong>${sys ? ' <span style="color:var(--muted)">(system)</span>' : ''}</td>
-      <td>${esc(j.kind)}</td>
-      <td>${target}</td>
-      <td><code>${esc(j.schedule)}</code></td>
-      <td>${lastBadge}</td>
-      <td>${j.enabled ? '<span class="badge badge-ok">on</span>' : '<span class="badge badge-warn">off</span>'}</td>
-      <td>
-        <button class="btn btn-sm btn-primary" onclick="runJob('${esc(j.id)}')" ${sys ? '' : ''}>Run</button>
-        <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="viewRuns('${esc(j.id)}')">Runs</button>
-        ${sys ? '' : `<button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="editJob('${esc(j.id)}')">Edit</button>`}
-        ${sys ? '' : `<button class="btn btn-sm btn-danger" onclick="deleteJob('${esc(j.id)}')">×</button>`}
-      </td>
-    </tr>`;
-  }).join('');
-  // Populate filter dropdown
-  const sel = document.getElementById('filterJob');
-  const cur = sel.value;
-  sel.innerHTML = `<option value="">All jobs</option>` + _jobs.map(j => `<option value="${esc(j.id)}">${esc(j.label)}</option>`).join('');
-  sel.value = cur;
-}
-
-function renderSnapshots() {
-  const filter = document.getElementById('filterJob').value;
-  const tbody = document.getElementById('snapsBody');
-  const list = _snaps
-    .filter(s => !filter || s.job_id === filter)
-    .sort((a,b) => (b.time||'').localeCompare(a.time||''));
-  if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">No snapshots yet.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = list.map(s => {
-    const jobLabel = (_jobs.find(j => j.id === s.job_id) || {}).label
-                  || (s.job_id ? esc(s.job_id) : '<i>(legacy)</i>');
-    const isDb = s.kind === 'db';
-    const lastSize = _state.runs?.[s.job_id]?.history?.slice(-1)[0]?.size_bytes;
-    const downloadBtn = isDb
-      ? `<a class="btn btn-sm btn-primary" href="/admin/api/backup.php?action=download&snapshot_id=${esc(s.id)}" download>Download</a>`
-      : '';
-    return `<tr>
-      <td>${esc(fmtTime(s.time))}<br><small style="color:var(--muted)"><code>${esc(s.id)}</code></small></td>
-      <td>${jobLabel}</td>
-      <td>${esc(s.kind ?? '–')}</td>
-      <td>${lastSize ? esc(fmtSize(lastSize)) : '<span style="color:var(--muted)">?</span>'}</td>
-      <td>
-        <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="restoreSnap('${esc(s.id)}')">Restore</button>
-        ${downloadBtn}
-        <button class="btn btn-sm btn-danger" onclick="forgetSnap('${esc(s.id)}')">×</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
-
+// ----- actions ----------------------------------------------------------
 async function runJob(id) {
+  showToast('Running ' + id + '…');
   const r = await api('run', {job_id: id});
-  if (r.ok) showToast('Job started: ' + (r.run?.status || 'ok'));
+  if (r.ok) showToast('Run completed: ' + (r.run?.status || 'ok'));
   else showToast('Run failed: ' + (r.error || 'unknown'), 'error');
-  refreshAll();
+  await refreshAll(true);
 }
 
 async function deleteJob(id) {
-  if (!confirm('Delete this job? Past snapshots remain in B2.')) return;
+  if (!confirm('Delete this job?\nPast snapshots remain in B2.')) return;
   const newJobs = _jobs.filter(j => j.id !== id);
   const r = await api('jobs-put', {jobs: newJobs});
-  if (r.ok) { showToast('Deleted'); refreshAll(); }
+  if (r.ok) { showToast('Deleted'); await refreshAll(true); }
   else showToast('Delete failed: ' + (r.error || ''), 'error');
 }
 
 async function restoreSnap(id) {
   if (!confirm('Restore snapshot ' + id + ' into /var/cid-restores/' + id + '/?\n\nNothing in /var/www/sites or the database is overwritten — you copy from the staging dir manually.')) return;
+  showToast('Restoring…');
   const r = await api('restore', {snapshot_id: id});
   if (r.ok) alert('Restored to: ' + r.path + '\n\nCopy from there manually.');
   else showToast('Restore failed: ' + (r.error || ''), 'error');
 }
 
 async function forgetSnap(id) {
-  const confirmText = id;
-  const ans = prompt('Permanently delete snapshot from B2. Type the snapshot id "' + id + '" to confirm:');
-  if (ans !== confirmText) return;
+  const ans = prompt('Permanently delete snapshot from B2.\nType the snapshot id "' + id + '" to confirm:');
+  if (ans !== id) return;
   const r = await api('forget', {snapshot_id: id});
-  if (r.ok) { showToast('Forgotten'); refreshAll(); }
+  if (r.ok) { showToast('Forgotten'); await refreshAll(true); }
   else showToast('Forget failed: ' + (r.error || ''), 'error');
 }
 
-// --- Modal: add/edit job ---
-async function openJobModal() {
+// ----- modal ------------------------------------------------------------
+async function openJobModal(kind='db') {
   _editingId = null;
   document.getElementById('jobModalTitle').textContent = 'Add Job';
   document.getElementById('jobLabel').value = '';
-  document.getElementById('jobKind').value = 'db';
+  document.getElementById('jobKind').value = kind;
   document.getElementById('jobSchedKind').value = 'daily';
   document.getElementById('jobSchedTime').value = '01:00';
   document.getElementById('jobRetention').value = 30;
@@ -293,15 +484,14 @@ async function openJobModal() {
     _targets = {databases: t.databases || [], sites: t.sites || []};
   }
   document.getElementById('jobDatabase').innerHTML = _targets.databases.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
-  document.getElementById('jobSite').innerHTML = _targets.sites.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
-  loadTables();
+  document.getElementById('jobSite').innerHTML     = _targets.sites.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if (kind === 'db') loadTables();
   document.getElementById('jobModal').classList.add('show');
 }
 function editJob(id) {
   const j = _jobs.find(x => x.id === id);
   if (!j) return;
-  openJobModal();
-  setTimeout(() => {
+  openJobModal(j.kind).then(() => {
     _editingId = id;
     document.getElementById('jobModalTitle').textContent = 'Edit: ' + j.label;
     document.getElementById('jobLabel').value = j.label || '';
@@ -319,58 +509,63 @@ function editJob(id) {
       document.getElementById('jobSite').value = j.site;
       document.getElementById('jobExcludes').value = (j.excludes || []).join('\n');
     }
-    // Parse schedule
     const parts = (j.schedule || '').split(' ');
     document.getElementById('jobSchedKind').value = parts[0] || 'daily';
     renderScheduleInputs();
-    if (parts[0] === 'daily') {
-      document.getElementById('jobSchedTime').value = parts[1] || '01:00';
-    } else if (parts[0] === 'weekly') {
+    if (parts[0] === 'daily') document.getElementById('jobSchedTime').value = parts[1] || '01:00';
+    else if (parts[0] === 'weekly') {
       document.getElementById('jobSchedDay').value  = parts[1] || 'Mon';
       document.getElementById('jobSchedTime').value = parts[2] || '01:00';
     } else if (parts[0] === 'monthly') {
       document.getElementById('jobSchedDom').value  = parts[1] || '1';
       document.getElementById('jobSchedTime').value = parts[2] || '01:00';
     }
-  }, 50);
+  });
 }
 function closeJobModal() { document.getElementById('jobModal').classList.remove('show'); }
-
 function onKindChange() {
   const kind = document.getElementById('jobKind').value;
-  document.getElementById('dbTargetGroup').style.display      = kind === 'db' ? '' : 'none';
-  document.getElementById('dbTablesGroup').style.display      = kind === 'db' ? '' : 'none';
-  document.getElementById('siteTargetGroup').style.display    = kind === 'site' ? '' : 'none';
-  document.getElementById('siteExcludesGroup').style.display  = kind === 'site' ? '' : 'none';
+  document.getElementById('dbTargetGroup').style.display     = kind === 'db'   ? '' : 'none';
+  document.getElementById('dbTablesGroup').style.display     = kind === 'db'   ? '' : 'none';
+  document.getElementById('siteTargetGroup').style.display   = kind === 'site' ? '' : 'none';
+  document.getElementById('siteExcludesGroup').style.display = kind === 'site' ? '' : 'none';
 }
-
 async function loadTables() {
   const db = document.getElementById('jobDatabase').value;
   const sel = document.getElementById('jobTables');
+  const hint = document.getElementById('tablesHint');
   sel.innerHTML = '<option disabled>loading…</option>';
   if (!db) { sel.innerHTML = ''; return; }
   const r = await api('list-tables', {database: db});
-  sel.innerHTML = (r.tables || []).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  const tables = r?.tables || [];
+  if (!tables.length) {
+    sel.innerHTML = '';
+    sel.disabled = true;
+    hint.style.color = 'var(--accent)';
+    hint.textContent = `(no tables in ${db} yet — whole DB will be dumped when tables appear)`;
+  } else {
+    sel.disabled = false;
+    sel.innerHTML = tables.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+    hint.style.color = 'var(--muted)';
+    hint.textContent = 'Empty selection = all tables. Ctrl/Cmd-click to multi-select.';
+  }
 }
-
 function renderScheduleInputs() {
   const kind = document.getElementById('jobSchedKind').value;
-  document.getElementById('jobSchedDay').style.display = (kind === 'weekly') ? '' : 'none';
+  document.getElementById('jobSchedDay').style.display = (kind === 'weekly')  ? '' : 'none';
   document.getElementById('jobSchedDom').style.display = (kind === 'monthly') ? '' : 'none';
 }
-
 function buildSchedule() {
   const kind = document.getElementById('jobSchedKind').value;
   const time = document.getElementById('jobSchedTime').value || '01:00';
-  if (kind === 'daily') return 'daily ' + time;
-  if (kind === 'weekly') return 'weekly ' + document.getElementById('jobSchedDay').value + ' ' + time;
+  if (kind === 'daily')   return 'daily ' + time;
+  if (kind === 'weekly')  return 'weekly ' + document.getElementById('jobSchedDay').value + ' ' + time;
   if (kind === 'monthly') {
     const d = parseInt(document.getElementById('jobSchedDom').value || '1', 10);
     return 'monthly ' + d + ' ' + time;
   }
   return 'daily ' + time;
 }
-
 function buildJob() {
   const kind = document.getElementById('jobKind').value;
   const label = document.getElementById('jobLabel').value.trim() || 'untitled';
@@ -394,14 +589,12 @@ function buildJob() {
   }
   return j;
 }
-
 async function saveJob() {
   const j = buildJob();
   let newJobs;
   if (_editingId) {
     newJobs = _jobs.map(x => x.id === _editingId ? j : x);
   } else {
-    // Don't allow duplicate ids
     if (_jobs.some(x => x.id === j.id)) {
       showToast('A job with this target already exists. Edit it instead.', 'error');
       return;
@@ -409,36 +602,9 @@ async function saveJob() {
     newJobs = [..._jobs, j];
   }
   const r = await api('jobs-put', {jobs: newJobs});
-  if (r.ok) { showToast('Saved'); closeJobModal(); refreshAll(); }
+  if (r.ok) { showToast('Saved'); closeJobModal(); await refreshAll(true); }
   else showToast('Save failed: ' + (r.error || ''), 'error');
 }
 
-// --- Modal: per-job runs ---
-function viewRuns(id) {
-  const j = _jobs.find(x => x.id === id);
-  const hist = _state.runs?.[id]?.history || [];
-  document.getElementById('runsModalTitle').textContent = 'Runs: ' + (j ? j.label : id);
-  const body = document.getElementById('runsBody');
-  if (!hist.length) {
-    body.innerHTML = '<p style="color:var(--muted)">No runs yet.</p>';
-  } else {
-    body.innerHTML = hist.slice().reverse().map(r => `
-      <details style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
-        <summary>
-          ${r.status === 'ok'
-            ? '<span class="badge badge-ok">ok</span>'
-            : '<span class="badge badge-err">error</span>'}
-          ${esc(fmtTime(r.started_at))} → ${esc(fmtTime(r.ended_at))}
-          ${r.size_bytes ? ' · ' + esc(fmtSize(r.size_bytes)) : ''}
-          ${r.snapshot_id ? ' · <code>' + esc(r.snapshot_id) + '</code>' : ''}
-        </summary>
-        ${r.stdout_tail ? '<details style="margin-top:8px"><summary>stdout</summary><pre class="log-output">' + esc(r.stdout_tail) + '</pre></details>' : ''}
-        ${r.stderr_tail ? '<details style="margin-top:4px"><summary>stderr</summary><pre class="log-output">' + esc(r.stderr_tail) + '</pre></details>' : ''}
-      </details>`).join('');
-  }
-  document.getElementById('runsModal').classList.add('show');
-}
-function closeRunsModal() { document.getElementById('runsModal').classList.remove('show'); }
-
-refreshAll();
+refreshAll(false);
 </script>
