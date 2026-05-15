@@ -116,6 +116,16 @@ services:
       - ../sites:/var/www/sites:ro
       # Restore + download staging (shared rw with cid-php74).
       - /var/cid-restores:/var/cid-restores
+      # ---- Config-backup sources (read-only) ----
+      # The __system_config_backup__ job tars these together so a fresh-host
+      # rebuild can put everything back. Restic encrypts the stream client-side.
+      - /etc/cid-backup.env:/host-config/cid-backup.env:ro
+      - ./.env:/host-config/docker.env:ro
+      - ./docker-compose.yml:/host-config/docker-compose.yml:ro
+      - /etc/cron.d:/host-config/cron.d:ro
+      - /etc/ssh/sshd_config.d:/host-config/sshd_config.d:ro
+      - /var/lib/caddy:/host-config/caddy:ro
+      - /var/lib/dpkg:/host-config/dpkg:ro
     networks:
       - cid-network
     extra_hosts:

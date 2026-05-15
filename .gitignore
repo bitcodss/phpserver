@@ -20,6 +20,8 @@ memory/
 # Backup engine runtime state (UI-edited; bootstrapped by broker from .example)
 sites/opc.bitco.link/public/admin/data/backup-jobs.json
 sites/opc.bitco.link/public/admin/data/backup-state.json
+# Restore-drill history — operational state, appended at each drill run.
+sites/opc.bitco.link/public/admin/data/drill-history.json
 
 # Agent config files (not part of the stack)
 SOUL.md

@@ -2,7 +2,9 @@ FROM python:3.12-alpine
 
 # docker CLI (static binary) — same version as cid-php74 used to ship.
 # Plus restic (≥0.14) for the backup engine (see backup-v2-plan.md).
-RUN apk add --no-cache curl ca-certificates restic \
+# Plus dpkg + tar so the config-backup job can read the host's package list
+# (via mounted /var/lib/dpkg) and tar /etc + /var/lib/caddy into the stream.
+RUN apk add --no-cache curl ca-certificates restic dpkg tar \
     && ARCH=$(uname -m) \
     && curl -fsSL https://download.docker.com/linux/static/stable/${ARCH}/docker-28.0.1.tgz | tar xz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \

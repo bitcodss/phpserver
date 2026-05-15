@@ -543,6 +543,7 @@ def _ensure_data_files():
         elif name == "backup-state.json":
             _atomic_write(real, {"runs": {}, "seeded_dbs": []})
     _ensure_system_check_job()
+    _ensure_config_backup_job()
     _ensure_seeded_db_jobs()
 
 
@@ -638,6 +639,102 @@ def _run_system_check():
     return None, proc.stdout
 
 
+# ---- Config backup (Phase 0.2) ----------------------------------------
+# Tars every host-config path we care about, plus a fresh `dpkg --get-selections`
+# snapshot of the host's installed packages, into restic via stdin. Restic
+# encrypts client-side so the secrets in the stream (cid-backup.env, docker/.env)
+# are protected at rest in B2.
+
+CONFIG_BACKUP_PATHS = [
+    "/host-config/cid-backup.env",
+    "/host-config/docker.env",
+    "/host-config/docker-compose.yml",
+    "/host-config/cron.d",
+    "/host-config/sshd_config.d",
+    "/host-config/caddy",
+]
+
+
+def _run_config_backup_job(job):
+    """Snapshot host config files + dpkg list into restic, tagged kind:config."""
+    # 1. Generate dpkg --get-selections against the mounted host dpkg db.
+    rc, dpkg_out, dpkg_err = _run(
+        ["dpkg", "--admindir=/host-config/dpkg", "--get-selections"],
+        timeout=60,
+    )
+    if rc != 0:
+        raise RuntimeError(f"dpkg --get-selections failed: {dpkg_err.strip()}")
+
+    # 2. Stage the dpkg list as a real file so it can be tarred alongside paths.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="cidcfg-") as tmpdir:
+        dpkg_path = os.path.join(tmpdir, "dpkg-selections.txt")
+        with open(dpkg_path, "w") as f:
+            f.write(dpkg_out)
+
+        # Existence check for each source path — log missing ones but don't abort.
+        paths_to_tar = [dpkg_path]
+        missing = []
+        for p in CONFIG_BACKUP_PATHS:
+            if os.path.exists(p):
+                paths_to_tar.append(p)
+            else:
+                missing.append(p)
+
+        # 3. Stream tar | restic backup --stdin --stdin-filename config.tar
+        tar_cmd = ["tar", "-c"] + paths_to_tar
+        backup_cmd = ["restic", "backup", "--stdin",
+                      "--stdin-filename", "config.tar",
+                      "--compression", "auto",
+                      "--tag", f"job:{job['id']}",
+                      "--tag", "kind:config",
+                      "--host", "cid"]
+
+        tar = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            rproc = subprocess.run(
+                backup_cmd, stdin=tar.stdout, env=_restic_env(),
+                capture_output=True, timeout=900,
+            )
+        finally:
+            if tar.stdout:
+                tar.stdout.close()
+            try:
+                _, tar_err = tar.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                tar.kill(); tar_err = b""
+        if tar.returncode != 0:
+            raise RuntimeError(f"tar failed: {tar_err.decode('utf-8','replace').strip()}")
+        if rproc.returncode != 0:
+            raise RuntimeError(f"restic backup failed: {rproc.stderr.decode('utf-8','replace').strip()}")
+
+        out = rproc.stdout.decode("utf-8", "replace")
+        m = re.search(r"snapshot ([a-f0-9]{8}) saved", out)
+        snap_id = m.group(1) if m else None
+        if missing:
+            out += f"\n[note] config sources not present at backup time: {', '.join(missing)}\n"
+
+    _apply_retention(job)
+    return snap_id, out
+
+
+def _ensure_config_backup_job():
+    """Seed __system_config_backup__ if absent; idempotent across restarts."""
+    jobs = _load_jobs()
+    if any(j.get("id") == "__system_config_backup__" for j in jobs.get("jobs", [])):
+        return
+    jobs.setdefault("jobs", []).append({
+        "id":             "__system_config_backup__",
+        "label":          "Config backup (daily)",
+        "kind":           "config_backup",
+        "schedule":       "daily 01:30",
+        "retention_days": 90,
+        "enabled":        True,
+        "created_at":     _now_iso(),
+    })
+    _save_jobs_atomic(jobs)
+
+
 def _apply_retention(job):
     retention = int(job.get("retention_days", 30))
     subprocess.run(
@@ -689,6 +786,8 @@ def _run_job(job):
             snap_id, out = _run_site_job(job)
         elif kind == "system_check":
             snap_id, out = _run_system_check()
+        elif kind == "config_backup":
+            snap_id, out = _run_config_backup_job(job)
         else:
             raise RuntimeError(f"unknown job kind: {kind!r}")
         size = _snapshot_size(snap_id)
@@ -754,7 +853,7 @@ def backup_jobs_put():
             _validate_tables(j["database"], j.get("tables", []))
         elif kind == "site":
             _validate_site(j.get("site", ""))
-        elif kind == "system_check":
+        elif kind in ("system_check", "config_backup"):
             pass
         else:
             raise BadRequest(f"unknown kind: {kind!r}")
