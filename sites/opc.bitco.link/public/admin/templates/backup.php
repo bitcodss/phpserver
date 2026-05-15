@@ -18,15 +18,9 @@
 <h2 class="page-title">🗄️ Backup</h2>
 
 <div class="card" style="margin-bottom:20px;padding:14px 20px">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
-        <div>
-            <strong>Integrity check (weekly):</strong>
-            <span id="checkStatus" style="color:var(--muted)">…</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-            <span id="cacheState" style="color:var(--muted);font-size:0.8rem">…</span>
-            <button class="btn btn-sm btn-primary" onclick="refreshAll(true)">🔄 Refresh</button>
-        </div>
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
+        <span id="cacheState" style="color:var(--muted);font-size:0.8rem">…</span>
+        <button class="btn btn-sm btn-primary" onclick="refreshAll(true)">🔄 Refresh</button>
     </div>
 </div>
 
@@ -62,35 +56,12 @@
     </table>
 </div>
 
-<!-- ============================= SYSTEM CHECK ============================ -->
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-    <h3>🔍 Integrity check</h3>
-    <span style="color:var(--muted);font-size:0.8rem" title="restic check --read-data-subset=5% — 5% of stored data is verified each week. Full dataset cycles through in ~20 weeks.">5% subset/week → ~20 weeks for full coverage</span>
-</div>
-<div class="table-wrap" style="margin-bottom:24px">
-    <table>
-        <thead><tr>
-            <th style="width:30px"></th>
-            <th>Label</th><th>Schedule</th><th>Last run</th><th>On</th>
-            <th style="width:120px">Actions</th>
-        </tr></thead>
-        <tbody id="sysJobsBody"><tr><td colspan="6" style="color:var(--muted)">loading…</td></tr></tbody>
-    </table>
-</div>
-
-<!-- ============================= LEGACY POOL ============================= -->
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-    <h3>🗄️ Legacy snapshots <small style="color:var(--muted);font-weight:normal">(not attached to any job)</small></h3>
-</div>
-<div class="table-wrap" style="margin-bottom:24px">
-    <table>
-        <thead><tr>
-            <th>Time</th><th>Kind</th><th>Snapshot</th><th>Paths</th>
-            <th style="width:200px">Actions</th>
-        </tr></thead>
-        <tbody id="legacyBody"><tr><td colspan="5" style="color:var(--muted)">loading…</td></tr></tbody>
-    </table>
-</div>
+<!-- The Integrity check job and any un-tagged "legacy" snapshots are hidden
+     from this UI by request. Both still exist on the broker:
+       - __system_check__ continues running weekly Sun 04:00 (set BACKUP_NOTIFY_URL
+         in /etc/cid-backup.env if you want failure pings).
+       - Legacy snapshots live in B2; clean via CLI if desired:
+         sudo bash -c 'source /etc/cid-backup.env && restic forget <id> --prune' -->
 
 <!-- =========================== JOB MODAL ============================ -->
 <div id="jobModal" class="modal-bg">
@@ -102,6 +73,7 @@
         <option value="db">Database</option>
         <option value="site">Site</option>
       </select>
+      <small id="kindHint" style="color:var(--muted);display:none">Kind can't change after creation — delete and re-create the job to switch.</small>
     </div>
     <div class="form-group">
       <label>Label</label>
@@ -168,6 +140,8 @@ let _snaps = [];
 let _editingId = null;
 let _targets = { databases: [], sites: [] };
 let _expanded = new Set(); // job ids whose expansion panel is open
+let _snapPage = {};        // job_id → current snapshot page (1-indexed)
+const SNAP_PAGE_SIZE = 10;
 
 function api(action, payload={}) {
   return apiCall('backup.php', Object.assign({action}, payload));
@@ -242,7 +216,11 @@ async function refreshAll(force=false) {
     setCacheLabel('just now');
   } catch (e) {
     setCacheLabel('fetch failed');
-    showToast('refresh failed: ' + (e?.message || e), 'error');
+    if (typeof showToast === 'function') {
+      showToast('refresh failed: ' + (e?.message || e), 'error');
+    } else {
+      console.error('backup refresh failed before showToast was loaded:', e);
+    }
   }
 }
 
@@ -278,11 +256,13 @@ function jobRowHTML(j, kind) {
     ? '<span class="badge badge-ok">on</span>'
     : '<span class="badge badge-warn">off</span>';
 
+  // Keep all action buttons on one line — the cell has white-space:nowrap below.
   let actions = `<button class="btn btn-sm btn-primary" onclick="runJob('${esc(j.id)}')">Run</button>`;
   if (kind !== 'system_check') {
     actions += ` <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="editJob('${esc(j.id)}')">Edit</button>`;
     actions += ` <button class="btn btn-sm btn-danger" onclick="deleteJob('${esc(j.id)}')" title="Delete job">×</button>`;
   }
+  const actionsCell = `<td style="white-space:nowrap">${actions}</td>`;
 
   let mainRow;
   if (kind === 'system_check') {
@@ -292,7 +272,7 @@ function jobRowHTML(j, kind) {
       <td><code>${esc(j.schedule)}</code></td>
       <td>${last}${missed}</td>
       <td>${onBadge}</td>
-      <td>${actions}</td>
+      ${actionsCell}
     </tr>`;
   } else {
     const target = kind === 'db' ? esc(j.database) : esc(j.site);
@@ -304,7 +284,7 @@ function jobRowHTML(j, kind) {
       <td>${esc(j.retention_days)} d</td>
       <td>${last}${missed}</td>
       <td>${onBadge}</td>
-      <td>${actions}</td>
+      ${actionsCell}
     </tr>`;
   }
 
@@ -323,10 +303,16 @@ function expandedRowHTML(j, kind) {
     if (!mine.length) {
       snapsHTML = '<p style="color:var(--muted);margin:0">No snapshots yet for this job.</p>';
     } else {
-      snapsHTML = `<table style="width:100%">
-        <thead><tr><th>Time</th><th>Snapshot</th><th>Size</th><th style="width:240px">Actions</th></tr></thead>
-        <tbody>` + mine.map(s => {
-          // Try to find the size for this snapshot from history.
+      // Pagination: 10 per page, newest on page 1.
+      const total = mine.length;
+      const pageCount = Math.max(1, Math.ceil(total / SNAP_PAGE_SIZE));
+      let page = _snapPage[j.id] || 1;
+      if (page > pageCount) page = pageCount;
+      _snapPage[j.id] = page;
+      const start = (page - 1) * SNAP_PAGE_SIZE;
+      const slice = mine.slice(start, start + SNAP_PAGE_SIZE);
+
+      const rows = slice.map(s => {
           const hist = _state.runs?.[j.id]?.history || [];
           const match = hist.find(h => h.snapshot_id === s.id);
           const size = match?.size_bytes;
@@ -335,13 +321,25 @@ function expandedRowHTML(j, kind) {
             <td>${esc(fmtTime(s.time))}</td>
             <td><code>${esc(s.id)}</code></td>
             <td>${size != null ? esc(fmtSize(size)) : '<span style="color:var(--muted)">?</span>'}</td>
-            <td>
+            <td style="white-space:nowrap">
               <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="restoreSnap('${esc(s.id)}')">Restore</button>
               ${isDb ? `<a class="btn btn-sm btn-primary" href="/admin/api/backup.php?action=download&snapshot_id=${esc(s.id)}" download>Download</a>` : ''}
               <button class="btn btn-sm btn-danger" onclick="forgetSnap('${esc(s.id)}')">×</button>
             </td>
           </tr>`;
-        }).join('') + '</tbody></table>';
+        }).join('');
+
+      const pager = (pageCount > 1) ? `
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:8px;color:var(--muted);font-size:0.85rem">
+          <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="snapPage('${esc(j.id)}', ${page - 1}, ${pageCount})" ${page <= 1 ? 'disabled' : ''}>← Prev</button>
+          <span>Page ${page} / ${pageCount} (${total} snapshots)</span>
+          <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="snapPage('${esc(j.id)}', ${page + 1}, ${pageCount})" ${page >= pageCount ? 'disabled' : ''}>Next →</button>
+        </div>` : '';
+
+      snapsHTML = `<table style="width:100%">
+          <thead><tr><th>Time</th><th>Snapshot</th><th>Size</th><th style="width:240px">Actions</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>${pager}`;
     }
   }
 
@@ -376,17 +374,24 @@ function expandedRowHTML(j, kind) {
 }
 
 function toggleExpand(jobId) {
-  if (_expanded.has(jobId)) _expanded.delete(jobId);
-  else _expanded.add(jobId);
+  if (_expanded.has(jobId)) {
+    _expanded.delete(jobId);
+  } else {
+    _expanded.add(jobId);
+    _snapPage[jobId] = 1;            // reset to page 1 each time we expand
+  }
+  render();
+}
+
+function snapPage(jobId, page, max) {
+  if (page < 1 || page > max) return;
+  _snapPage[jobId] = page;
   render();
 }
 
 function render() {
-  renderCheckStatus();
-  renderSection('dbJobsBody',   _jobs.filter(j => j.kind === 'db'),           'db',           8, 'No DB jobs yet. Add one with the button above.');
-  renderSection('siteJobsBody', _jobs.filter(j => j.kind === 'site'),         'site',         8, 'No site jobs yet. Site backups are opt-in.');
-  renderSection('sysJobsBody',  _jobs.filter(j => j.kind === 'system_check'), 'system_check', 6, '');
-  renderLegacy();
+  renderSection('dbJobsBody',   _jobs.filter(j => j.kind === 'db'),   'db',   8, 'No DB jobs yet. Add one with the button above.');
+  renderSection('siteJobsBody', _jobs.filter(j => j.kind === 'site'), 'site', 8, 'No site jobs yet. Site backups are opt-in.');
 }
 
 function renderSection(tbodyId, jobs, kind, colspan, emptyMsg) {
@@ -399,39 +404,8 @@ function renderSection(tbodyId, jobs, kind, colspan, emptyMsg) {
   tbody.innerHTML = jobs.map(j => jobRowHTML(j, kind)).join('');
 }
 
-function renderLegacy() {
-  const tbody = document.getElementById('legacyBody');
-  const orphans = _snaps
-    .filter(s => !s.job_id)
-    .sort((a,b) => (b.time||'').localeCompare(a.time||''));
-  if (!orphans.length) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">No legacy snapshots.</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = orphans.map(s => `
-    <tr>
-      <td>${esc(fmtTime(s.time))}</td>
-      <td>${esc((s.tags && s.tags[0]) || '–')}</td>
-      <td><code>${esc(s.id)}</code></td>
-      <td><small style="color:var(--muted)">${esc((s.paths || []).join(', '))}</small></td>
-      <td>
-        <button class="btn btn-sm" style="background:var(--border);color:var(--text)" onclick="restoreSnap('${esc(s.id)}')">Restore</button>
-        <button class="btn btn-sm btn-danger" onclick="forgetSnap('${esc(s.id)}')">×</button>
-      </td>
-    </tr>`).join('');
-}
-
-function renderCheckStatus() {
-  const r = _state.runs?.__system_check__?.history?.slice(-1)[0];
-  const el = document.getElementById('checkStatus');
-  if (!el) return;
-  if (!r) { el.textContent = 'never run yet'; el.style.color='var(--muted)'; return; }
-  if (r.status === 'ok') {
-    el.innerHTML = `<span class="badge badge-ok">✓ ${esc(fmtTime(r.ended_at))}</span>`;
-  } else {
-    el.innerHTML = `<span class="badge badge-err">✗ FAILED at ${esc(fmtTime(r.ended_at))}</span>`;
-  }
-}
+// (renderLegacy / renderCheckStatus removed — those sections are hidden
+//  from the UI per user request; the broker still runs both behind the scenes.)
 
 // ----- actions ----------------------------------------------------------
 async function runJob(id) {
@@ -472,6 +446,8 @@ async function openJobModal(kind='db') {
   document.getElementById('jobModalTitle').textContent = 'Add Job';
   document.getElementById('jobLabel').value = '';
   document.getElementById('jobKind').value = kind;
+  document.getElementById('jobKind').disabled = false;
+  document.getElementById('kindHint').style.display = 'none';
   document.getElementById('jobSchedKind').value = 'daily';
   document.getElementById('jobSchedTime').value = '01:00';
   document.getElementById('jobRetention').value = 30;
@@ -496,6 +472,10 @@ function editJob(id) {
     document.getElementById('jobModalTitle').textContent = 'Edit: ' + j.label;
     document.getElementById('jobLabel').value = j.label || '';
     document.getElementById('jobKind').value = j.kind;
+    // Lock the Kind on Edit — changing it would orphan the existing job id
+    // and its B2 snapshots. User must delete + re-add to switch kinds.
+    document.getElementById('jobKind').disabled = true;
+    document.getElementById('kindHint').style.display = 'block';
     onKindChange();
     document.getElementById('jobRetention').value = j.retention_days || 30;
     document.getElementById('jobEnabled').checked = !!j.enabled;
@@ -606,5 +586,13 @@ async function saveJob() {
   else showToast('Save failed: ' + (r.error || ''), 'error');
 }
 
-refreshAll(false);
+// Defer the initial fetch until DOMContentLoaded — the global `apiCall`/
+// `showToast` are defined in admin/index.php BELOW where this template's
+// <script> runs. Without this guard, the first cold load throws
+// "apiCall is not a function" → catch → "showToast is not defined".
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', () => refreshAll(false));
+} else {
+  refreshAll(false);
+}
 </script>
