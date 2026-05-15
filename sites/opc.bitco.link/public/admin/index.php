@@ -135,6 +135,7 @@ $page = $_GET['page'] ?? 'dashboard';
         <a href="?page=php" class="nav-item <?= $page === 'php' ? 'active' : '' ?>"><span class="icon">🐘</span> PHP Settings</a>
         <a href="?page=database" class="nav-item <?= $page === 'database' ? 'active' : '' ?>"><span class="icon">🗄️</span> Database</a>
         <a href="?page=security" class="nav-item <?= $page === 'security' ? 'active' : '' ?>"><span class="icon">🛡️</span> Security</a>
+        <a href="?page=backup" class="nav-item <?= $page === 'backup' ? 'active' : '' ?>"><span class="icon">🗄️</span> Backup</a>
         <a href="?page=logs" class="nav-item <?= $page === 'logs' ? 'active' : '' ?>"><span class="icon">📋</span> Logs</a>
         <div class="sidebar-footer">
             <a href="?logout=1">🚪 Logout</a>
@@ -148,6 +149,7 @@ $page = $_GET['page'] ?? 'dashboard';
             case 'php': include __DIR__ . '/templates/php.php'; break;
             case 'database': include __DIR__ . '/templates/database.php'; break;
             case 'security': include __DIR__ . '/templates/security.php'; break;
+            case 'backup': include __DIR__ . '/templates/backup.php'; break;
             case 'logs': include __DIR__ . '/templates/logs.php'; break;
             default: echo '<p>Page not found</p>';
         }

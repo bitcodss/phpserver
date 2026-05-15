@@ -1,30 +1,26 @@
 #!/bin/bash
 # ===================================================================
-# ศ.Cid backup script
+# ⚠️  DEPRECATED — use /usr/local/bin/cid-backup-tick (broker-based v2)
 #
-# Backs up:
-#   - MariaDB (mysqldump --all-databases, streamed via docker exec)
-#   - /home/bitcodata/phpserver/sites/  (web roots)
-#   - /home/bitcodata/phpserver/docker/.env  (secrets needed for restore)
+# This script is the original monolithic backup. It does NOT coordinate
+# with cid-broker's lock — running it while v2 is active can produce
+# concurrent mysqldumps. Kept for one release as a manual fallback and
+# disaster-recovery aid; will be removed in the next release.
 #
-# To: a restic repository (default: Backblaze B2). Encryption is
-# client-side; the repo password lives in /etc/cid-backup.env.
-#
-# Retention: keep last 7 daily, 4 weekly, 6 monthly snapshots.
-#
-# Cron entry (separate file):
-#   /etc/cron.d/cid-backup
-#     0 2 * * * root /usr/local/bin/cid-backup >> /var/log/cid-backup.log 2>&1
-#
-# Restore:
-#   source /etc/cid-backup.env
-#   restic snapshots
-#   restic restore <snapshot-id> --target /tmp/restore
-#   # DB dump is at /tmp/restore/mysql-dump.sql.gz
-#   # site tree   is at /tmp/restore/home/bitcodata/phpserver/sites/
+# v2 setup, job management, restore, and download all live in:
+#   - /admin/?page=backup (UI)
+#   - /etc/cron.d/cid-backup → /usr/local/bin/cid-backup-tick (every 5 min)
+#   - scripts/cid-backup-setup.md / backup-v2-plan.md (docs)
 # ===================================================================
 
 set -euo pipefail
+
+# Loud banner so anyone invoking this knows they're on the legacy path.
+cat >&2 <<'BANNER'
+[DEPRECATED] cid-backup.sh — please use cid-backup-tick (broker-based v2).
+This script does NOT coordinate with the broker. Do NOT run it while v2
+is active or you may end up with concurrent mysqldumps.
+BANNER
 
 REPO_ROOT="/home/bitcodata/phpserver"
 ENV_FILE="/etc/cid-backup.env"

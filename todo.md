@@ -60,17 +60,29 @@ The following files live on the host outside the git tree; mirror them via
 
 To roll back SSH hardening: `sudo rm /etc/ssh/sshd_config.d/99-hardening.conf && sudo systemctl reload ssh`.
 
-## Phase 3 — Backup (restic → Backblaze B2)
+## Phase 3 — Backup (restic → Backblaze B2)  ✓ shipped
 
 - [x] Install restic on host (apt, v0.16.4).
-- [x] Generate strong passphrase, stored in `/etc/cid-backup.env` (0600 root).
-- [x] Write `scripts/cid-backup.sh` + install at `/usr/local/bin/cid-backup`.
+- [x] Generate strong passphrase, stored in `/etc/cid-backup.env` (0640 root:docker so compose can read it).
+- [x] Write `scripts/cid-backup.sh` (now deprecated, banner added).
 - [x] Write `scripts/cid-backup.env.example` (committed template).
 - [x] Write `scripts/cid-backup-setup.md` (sign-up walkthrough + ops).
-- [x] Install `/etc/cron.d/cid-backup` (nightly 02:00 Asia/Bangkok).
+- [x] Install `/etc/cron.d/cid-backup` (every 5 min, runs `cid-backup-tick`).
 - [x] Install `/etc/logrotate.d/cid-backup`.
-- [x] Smoke-test against a local restic repo — DB dump (1.1 MB) + files snapshot OK, restore verified, structural check passed.
-- [ ] **YOU:** sign up at backblaze.com/b2, create bucket + application key, paste into `/etc/cid-backup.env` (steps in `scripts/cid-backup-setup.md`).
-- [ ] Run `sudo /usr/local/bin/cid-backup` once manually to init the B2 repo and confirm first upload.
-- [ ] Save the restic passphrase from `/etc/cid-backup.env` into your password manager.
-- [ ] Commit phase 3.
+- [x] User signed up at backblaze.com, B2 creds in `/etc/cid-backup.env`, first backup uploaded successfully.
+
+## Phase 4 — Backup v2 (job-driven engine + admin UI)  ✓ shipped
+
+- [x] Broker: `apk add restic` (0.18.1) in `docker/broker/Dockerfile`.
+- [x] Broker `app.py`: 9 backup routes, BackupLock, schedule parser, validators (db / table / snapshot / site / job-id regex + existence), `_set_restore_perms` with `writable_by_php` flag, bootstrap (`_ensure_data_files` → `_ensure_system_check_job` → `_ensure_seeded_db_jobs` with `seeded_dbs` marker), tick janitor, notify-on-error POST.
+- [x] Compose: broker `env_file: /etc/cid-backup.env`; rw bind `admin/data` + `/var/cid-restores`; ro bind `sites/`. `/var/cid-restores/` mounted into cid-php74 too.
+- [x] Host: `install -d -m 0750 -o 0 -g 33 /var/cid-restores`; `/etc/cron.d/cid-backup` calls `/usr/local/bin/cid-backup-tick`.
+- [x] `scripts/cid-backup-tick.sh` — curl over broker unix socket.
+- [x] `scripts/cid-backup.sh` — deprecation banner added.
+- [x] PHP: `admin/api/backup.php` dispatch, `admin/templates/backup.php` UI with Jobs + Snapshots panels + Add/Edit modal + Runs modal.
+- [x] `admin/index.php` — 🗄️ Backup nav entry.
+- [x] `.gitignore` — exclude runtime `backup-jobs.json` + `backup-state.json`.
+- [x] `*.example` files in `admin/data/` committed for first-run bootstrap.
+- [x] `open_basedir` extended to include `/var/cid-restores` (else PHP can't readfile downloads).
+- [x] End-to-end verification (10 checks): UI render, list-targets, jobs-get, snapshots, RunNow, restore, validation rejection, runs history, janitor sweep, download streaming.
+- [x] Commit phase 4.

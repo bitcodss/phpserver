@@ -14,6 +14,8 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d
       - fpm-socket:/run/php-fpm
       - broker-socket:/run/broker:ro
+      # Backup download staging — broker chowns to root:www-data 0640.
+      - /var/cid-restores:/var/cid-restores
     networks:
       - cid-network
     environment:
@@ -108,11 +110,21 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - broker-socket:/run/broker
+      # Backup engine: state JSON written by broker, read by admin UI.
+      - ../sites/opc.bitco.link/public/admin/data:/admin-data
+      # Site backups read this read-only.
+      - ../sites:/var/www/sites:ro
+      # Restore + download staging (shared rw with cid-php74).
+      - /var/cid-restores:/var/cid-restores
     networks:
       - cid-network
     extra_hosts:
       # Lets the broker reach the host's Caddy admin without --network=host.
       - "host.docker.internal:host-gateway"
+    # Restic + B2 credentials + optional BACKUP_NOTIFY_URL + optional PHP_GID
+    # all live in /etc/cid-backup.env (0600 root). Single source of truth.
+    env_file:
+      - /etc/cid-backup.env
     environment:
       TZ: Asia/Bangkok
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
