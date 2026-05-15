@@ -53,5 +53,24 @@ The following files live on the host outside the git tree; mirror them via
 - `/etc/fail2ban/filter.d/nginx-admin.conf` — POST /admin/ + 401
 - `/etc/fail2ban/filter.d/nginx-8g.conf` — *.access.log + 403
 - `/etc/ssh/sshd_config.d/99-hardening.conf` — SSH hardening drop-in
+- `/usr/local/bin/cid-backup` — backup script (source in `scripts/cid-backup.sh`)
+- `/etc/cid-backup.env` (0600 root) — restic passphrase + B2 keys
+- `/etc/cron.d/cid-backup` — nightly 02:00 Asia/Bangkok
+- `/etc/logrotate.d/cid-backup` — weekly rotate, keep 12
 
 To roll back SSH hardening: `sudo rm /etc/ssh/sshd_config.d/99-hardening.conf && sudo systemctl reload ssh`.
+
+## Phase 3 — Backup (restic → Backblaze B2)
+
+- [x] Install restic on host (apt, v0.16.4).
+- [x] Generate strong passphrase, stored in `/etc/cid-backup.env` (0600 root).
+- [x] Write `scripts/cid-backup.sh` + install at `/usr/local/bin/cid-backup`.
+- [x] Write `scripts/cid-backup.env.example` (committed template).
+- [x] Write `scripts/cid-backup-setup.md` (sign-up walkthrough + ops).
+- [x] Install `/etc/cron.d/cid-backup` (nightly 02:00 Asia/Bangkok).
+- [x] Install `/etc/logrotate.d/cid-backup`.
+- [x] Smoke-test against a local restic repo — DB dump (1.1 MB) + files snapshot OK, restore verified, structural check passed.
+- [ ] **YOU:** sign up at backblaze.com/b2, create bucket + application key, paste into `/etc/cid-backup.env` (steps in `scripts/cid-backup-setup.md`).
+- [ ] Run `sudo /usr/local/bin/cid-backup` once manually to init the B2 repo and confirm first upload.
+- [ ] Save the restic passphrase from `/etc/cid-backup.env` into your password manager.
+- [ ] Commit phase 3.

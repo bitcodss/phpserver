@@ -23,13 +23,14 @@ Container names are all prefixed `cid-` and share a single bridge network (`cid-
 
 ### Services (`docker/docker-compose.yml`)
 
-| Service | Container | Image | Host port (localhost) | Internal port | Role |
+| Service | Container | Image | Host port (localhost) | Internal | Role |
 |---|---|---|---|---|---|
-| php74 | `cid-php74` | custom build from `php:7.4-fpm-bullseye` | — | 9000 | PHP-FPM runtime |
+| php74 | `cid-php74` | custom build from `php:7.4-fpm-bullseye` | — | FPM on `/run/php-fpm/www.sock` (unix) | PHP-FPM runtime |
 | nginx | `cid-nginx` | `nginx:1.24-alpine` | **9080** | 80 | Reverse proxy / web server |
 | mariadb | `cid-mariadb` | `mariadb:10.11` | — (internal only) | 3306 | Primary DB |
 | phpmyadmin | `cid-phpmyadmin` | `phpmyadmin:5.2` | **9081** | 80 | DB UI |
 | redis | `cid-redis` | `redis:7-alpine` | — (internal only) | 6379 | Sessions / cache (64 MB, LRU) |
+| **broker** | `cid-broker` | custom build from `python:3.12-alpine` (Flask + gunicorn) | — | listens on `/run/broker/broker.sock` (unix) | Privileged-ops sidecar — holds `/var/run/docker.sock`, exposes a tightly scoped HTTP API to cid-php74 |
 | sftp | `cid-sftp` | `lscr.io/linuxserver/openssh-server` | **2222** (public) | 2222 | File transfer (`webmaster` user) |
 
 Public ingress is via host-level **Caddy** (not in compose) → auto-SSL → `localhost:9080` (nginx).
@@ -38,14 +39,23 @@ Public ingress is via host-level **Caddy** (not in compose) → auto-SSL → `lo
 
 - Base: `php:7.4-fpm-bullseye`
 - Extensions: `gd` (freetype/jpeg/webp), `mysqli`, `pdo_mysql`, `zip`, `intl`, `mbstring`, `xml`, `curl`, `bcmath`, `opcache`, `exif`, `soap`, `pcntl`, plus **`redis 5.3.7`** via PECL.
-- Tools: Composer, **Docker CLI 28.0.1** static binary (so admin code inside the container can drive `docker` against the mounted `/var/run/docker.sock`).
-- `www-data` is added to a `dockerhost` group (GID 988) to access the socket.
+- Tools: Composer. **Docker CLI is intentionally NOT installed** — privileged ops route through `cid-broker` instead.
+- `nginx` group (GID 101) added so the FPM unix socket created with `listen.group=nginx` is readable by `cid-nginx` over the shared volume.
+- Base image's `zz-docker.conf` is overwritten to keep only `daemonize = no` (its default `listen = 9000` would override our socket-mode `listen` directive).
+
+### Broker image (`docker/broker/`)
+
+- Base: `python:3.12-alpine` + Flask 3 + gunicorn 23.
+- Includes a Docker CLI static binary (28.0.1) — that's the only container in the stack that can talk to the Docker daemon.
+- Listens on `/run/broker/broker.sock` (gunicorn `--group phpaccess --umask 0117` → socket is `root:phpaccess` mode 0660; `phpaccess` is GID 33, matching `www-data` in `cid-php74`).
+- Routes: `GET /healthz`, `POST /container/status` (allow-listed names; read-only inspect), `POST /container` (start/stop/restart, narrower allow-list), `POST /mysql` and `POST /mysql-query` (run SQL as MariaDB root, password from env), `POST /logs` (docker logs --tail with stdout/stderr split), `POST /nginx/reload`, `POST /caddy/route` (POST to host Caddy admin via `host.docker.internal:2019`).
 
 ### Volumes & network
 
 - Named volumes: `mariadb-data`, `redis-data`.
-- Bind mounts: `../sites → /var/www/sites`, nginx & php config dirs (read-only), `docker/logs/{nginx,mariadb}`, and `/var/run/docker.sock` into the php container.
-- Network: bridge `cid-network`.
+- Tmpfs volumes: `fpm-socket` (shared by php74 ↔ nginx, holds `www.sock`), `broker-socket` (shared by broker ↔ php74, holds `broker.sock`).
+- Bind mounts: `../sites → /var/www/sites`, nginx & php config dirs, `docker/logs/{nginx,mariadb}`. **php74 no longer mounts `/var/run/docker.sock`** — only `cid-broker` does.
+- Network: bridge `cid-network`. Broker has `host.docker.internal:host-gateway` extra-host so it can reach the host's Caddy admin without `--network=host`.
 
 ---
 
@@ -59,27 +69,35 @@ Public ingress is via host-level **Caddy** (not in compose) → auto-SSL → `lo
 │
 ├── docker/
 │   ├── docker-compose.yml
-│   ├── .env.example                 # MYSQL_ROOT_PASSWORD / DATABASE / USER / PASSWORD
+│   ├── .env.example                 # full env template incl. admin/survey/SFTP/broker secrets
 │   ├── .env                         # local, gitignored
 │   ├── php/
 │   │   ├── Dockerfile
 │   │   └── conf/
 │   │       ├── php-custom.ini       # mounted at /usr/local/etc/php/conf.d/99-custom.ini
 │   │       └── www.conf             # mounted at /usr/local/etc/php-fpm.d/www.conf
+│   ├── broker/                      # privileged-ops sidecar (Python+Flask)
+│   │   ├── Dockerfile
+│   │   ├── app.py
+│   │   └── requirements.txt
 │   ├── nginx/
 │   │   ├── nginx.conf
 │   │   └── conf.d/
+│   │       ├── _8g.conf             # 8G firewall detection maps (Phase 1 security)
 │   │       ├── opc.bitco.link.conf
 │   │       └── opc2.bitco.link.conf
 │   ├── database/
 │   │   ├── all_databases.sql        # full dump (import on first boot)
 │   │   └── users_grants.sql         # MySQL user permissions
 │   └── logs/
-│       ├── nginx/                   # access.log, error.log
+│       ├── nginx/                   # access.log, error.log (per site)
 │       └── mariadb/                 # slow.log
 │
 ├── scripts/
-│   └── collect_metrics.sh           # cron → admin/data/metrics.json
+│   ├── collect_metrics.sh           # cron → admin/data/metrics.json
+│   ├── cid-backup.sh                # nightly restic backup (installed to /usr/local/bin/cid-backup)
+│   ├── cid-backup.env.example       # template for /etc/cid-backup.env
+│   └── cid-backup-setup.md          # B2 sign-up + ops doc
 │
 └── sites/
     ├── _config/
@@ -90,11 +108,14 @@ Public ingress is via host-level **Caddy** (not in compose) → auto-SSL → `lo
     ├── opc.bitco.link/public/
     │   ├── index.php                # landing
     │   └── admin/
-    │       ├── index.php            # login + sidebar + page router
+    │       ├── index.php            # login + sidebar + page router (bcrypt + CSRF + session regen)
+    │       ├── _lib.php             # shared brokerCall() / mysqlExec() / mysqlQuery() helpers
     │       ├── data/
-    │       │   └── metrics.json     # rolling 7d server metrics
+    │       │   └── metrics.json     # rolling 7d server metrics (web-denied; served via api/metrics.php)
     │       ├── api/
+    │       │   ├── _bootstrap.php   # session auth + CSRF gate, required by all endpoints
     │       │   ├── server_info.php
+    │       │   ├── metrics.php      # auth-gated JSON proxy to data/metrics.json
     │       │   ├── add_site.php
     │       │   ├── save_php.php
     │       │   ├── save_fpm.php
@@ -153,14 +174,14 @@ Site root convention inside the php74 container: **`/var/www/sites/<domain>/publ
 | `max_input_vars` | 3000 |
 | `post_max_size` / `upload_max_filesize` | 64M |
 | `max_file_uploads` | 20 |
-| `display_errors` / `display_startup_errors` | **On** (dev mode, by request) |
+| `display_errors` / `display_startup_errors` | **Off** (errors go to FPM stderr → docker logs) |
 | `error_reporting` | `E_ALL & ~E_DEPRECATED & ~E_STRICT` |
 | `expose_php` | Off |
 | `allow_url_fopen` / `allow_url_include` | On / **Off** |
 | `disable_functions` | `passthru, parse_ini_file, show_source, dl` |
 | `open_basedir` | `/var/www/sites:/tmp:/usr/share/php:/usr/local/bin:/proc` |
 | `session.save_handler` / `save_path` | `redis` / `tcp://redis:6379` |
-| `session.cookie_httponly` / `cookie_secure` / `samesite` / `use_strict_mode` | 1 / 0 / Lax / 1 |
+| `session.cookie_httponly` / `cookie_secure` / `samesite` / `use_strict_mode` | 1 / **1** / Lax / 1 |
 | `date.timezone` | Asia/Bangkok |
 | `opcache.memory_consumption` / `max_accelerated_files` / `revalidate_freq` | 128 / 10000 / 2 |
 | `realpath_cache_size` / `_ttl` | 4096k / 600 |
@@ -168,9 +189,10 @@ Site root convention inside the php74 container: **`/var/www/sites/<domain>/publ
 ### `docker/php/conf/www.conf` (FPM pool)
 
 - User/group: `www-data`
+- `listen = /run/php-fpm/www.sock`, `listen.owner = www-data`, `listen.group = nginx`, `listen.mode = 0660`
 - `pm = dynamic`, `pm.max_children = 20`, `start_servers = 4`, `min_spare = 2`, `max_spare = 8`, `pm.max_requests = 500`
 - `request_slowlog_timeout = 5s`, status page at `/fpm-status` (internal)
-- `display_errors = On`
+- `clear_env = no` — pass through container env vars so `getenv('MYSQL_ROOT_PASSWORD')` etc. work in PHP
 
 ### `docker/nginx/nginx.conf`
 
@@ -181,22 +203,52 @@ Site root convention inside the php74 container: **`/var/www/sites/<domain>/publ
 - `server_tokens off`
 - Rate-limit zones: `general` 10r/s, `login` 3r/s (10 MB shared mem each)
 
+### `docker/nginx/conf.d/_8g.conf` (Phase 1 security)
+
+Detection-only `map` directives at `http {}` level (file is auto-included by
+nginx because `conf.d/*.conf` is read into the http context). Sets a single
+`$block_all` variable to 1 when any rule fires. Per-site vhosts decide what to
+do — currently `if ($block_all) { return 403; }`.
+
+Detects: scanner UAs (sqlmap, nikto, masscan, Censys, ZGrab, …), empty UA,
+suspicious referers, XSS / SQLi / RCE patterns in query strings (literal + URL-encoded variants), file-read probes (`/etc/passwd`, `proc/self/environ`, `.ssh`), dangerous URIs (`/wp-config.php`, `/.env`, `/xmlrpc.php`, sensitive extensions, `.git`/`.svn`), and dangerous HTTP methods (TRACE/TRACK/CONNECT/MOVE/PROPFIND/etc).
+
 ### `docker/nginx/conf.d/*.conf` (per-site)
 
-- FastCGI pass to `php74:9000`
+- FastCGI pass to **`unix:/run/php-fpm/www.sock`** (via the shared `fpm-socket` tmpfs volume)
+- `if ($block_all) { return 403; }` immediately after `limit_req`
 - `try_files $uri $uri/ /index.php?$query_string` (SPA-friendly)
 - Static files: 30-day immutable cache
 - 60s FastCGI connect timeout, 300s read/write
-- Deny access to dotfiles and `.env / .git / .ini / .log / .sql / .sh / .conf`
+- Deny access to dotfiles and `.env / .git / .ini / .log / .sql / .sh / .conf / .bak / .test / .orig / .old`
 - `fastcgi_hide_header X-Powered-By` and per-site `open_basedir` reinforcement via `fastcgi_param PHP_VALUE`
+- `location ^~ /admin/data/ { deny all; return 404; }` (metrics.json is served via auth-gated PHP, not directly)
+- `location = /admin/ { limit_req zone=login burst=5 nodelay; }` on the admin site for tighter throttle on the login endpoint
 
 ### `docker/.env.example`
 
 ```
-MYSQL_ROOT_PASSWORD=ChangeMe_RootPass!
+# MariaDB
+MYSQL_ROOT_PASSWORD=…
 MYSQL_DATABASE=opc_db
 MYSQL_USER=opc_user
-MYSQL_PASSWORD=ChangeMe_UserPass!
+MYSQL_PASSWORD=…
+
+# Survey app (opc2)
+OPC2_DB_HOST=mariadb
+OPC2_DB_NAME=dw_cressida
+OPC2_DB_USER=dw_spy
+OPC2_DB_PASSWORD=…
+OPC2_STATUS_TOKEN=…
+OPC2_RAWDATA_TOKEN=…
+
+# Admin dashboard
+ADMIN_USER=admin
+ADMIN_PASS_HASH=$$2y$$10$$…   # bcrypt hash; $ doubled so compose doesn't expand
+
+# SFTP
+SFTP_USER=webmaster
+SFTP_PASSWORD=…
 ```
 
 MariaDB command flags (in compose): `utf8mb4 / utf8mb4_unicode_ci`, `innodb-buffer-pool-size=256M`, `max-connections=100`, slow-query log at `> 2s` to `/var/log/mysql/slow.log`.
@@ -207,15 +259,16 @@ MariaDB command flags (in compose): `utf8mb4 / utf8mb4_unicode_ci`, `innodb-buff
 
 ### Authentication
 
-- Session-based. Single hardcoded user defined in `admin/index.php` (`admin` / `Aptx4869&$`).
-- Login form posts to `/admin/`; success sets `$_SESSION['authenticated']` and redirects.
-- Logout via `?logout=1` → `session_destroy()`.
-- Note: although the file constructs a bcrypt hash, the actual credential check on line 14 compares the plaintext literal. See §8 Security Posture.
+- Session-based. User + bcrypt hash come from container env (`ADMIN_USER`, `ADMIN_PASS_HASH`); nothing is hardcoded.
+- Login form POSTs to `/admin/`. Credential check uses `hash_equals` + `password_verify`. On success: `session_regenerate_id(true)`, set `$_SESSION['authenticated']`, mint a CSRF token, redirect.
+- **Failed login returns HTTP 401** — signal consumed by the fail2ban `nginx-admin` jail on the host.
+- Logout: unset `$_SESSION`, clear the session cookie with the correct flags, `session_destroy()`, redirect.
+- CSRF token issued at login lives in `$_SESSION['csrf']`; every state-changing API POST must echo it back in `X-CSRF-Token` (enforced by `admin/api/_bootstrap.php`).
 
 ### Layout
 
 - Sidebar (dark `#0f172a` background, accent `#38bdf8`) with six nav links and a logout footer. Main pane is included from `templates/<page>.php` based on `?page=…`. Default page is `dashboard`.
-- All write actions are AJAX `POST` to `/admin/api/<endpoint>.php` with JSON bodies (`apiCall()` helper in `index.php`). Results surface via a `showToast()` notification.
+- All write actions are AJAX `POST` to `/admin/api/<endpoint>.php` with JSON bodies via the `apiCall()` helper in `index.php`, which automatically attaches `X-CSRF-Token`. Results surface via a `showToast()` notification.
 
 ### Modules
 
@@ -234,15 +287,16 @@ All endpoints require an authenticated session. POST = JSON in / JSON out unless
 
 | Endpoint | Method | Purpose / side effects |
 |---|---|---|
-| `server_info.php` | GET | JSON: IP, hostname, PHP version, current time. |
-| `add_site.php` | POST | Provisions a new site end-to-end: creates `sites/<domain>/public`, writes nginx vhost into `docker/nginx/conf.d/`, writes Caddy route template into `sites/_config/nginx/`, optionally creates DB + MySQL user with a generated random password. Returns credentials in response. |
-| `save_php.php` | POST | Patches `docker/php/conf/php-custom.ini` and restarts the `cid-php74` container. |
-| `save_fpm.php` | POST | Patches `docker/php/conf/www.conf` and reloads FPM. |
-| `create_db.php` | POST | `CREATE DATABASE … CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`. Optional `CREATE USER` + grants in the same call. |
-| `drop_db.php` | POST | `DROP DATABASE` with a confirm-pattern guard. |
-| `manage_user.php` | POST | MySQL user CRUD: create / delete / grant / revoke. |
-| `container_action.php` | POST | `docker start|stop|restart <container>` against the mounted socket. **Allow-list** (do not widen without thought): `cid-php74`, `cid-nginx`, `cid-mariadb`, `cid-phpmyadmin`, `cid-redis`. |
-| `site_config.php` | GET / POST | Read & write a per-site `site.json` metadata file. |
+| `server_info.php` | GET | JSON: IP (dynamic via `$_SERVER['SERVER_ADDR']`), hostname, PHP version, current time. |
+| `metrics.php` | GET | Auth-gated proxy that streams `data/metrics.json` to the dashboard JS. The raw path is denied at nginx; only this endpoint exposes it. |
+| `add_site.php` | POST | Provisions a new site end-to-end: creates `sites/<domain>/public` (a static `index.html`, not interpolated PHP), writes nginx vhost into `docker/nginx/conf.d/`, optionally creates DB + MySQL user (passwords validated against a strict regex). Caddy route POST goes through broker `/caddy/route`. |
+| `save_php.php` | POST | Per-key validator allow-list; values rejected if they contain `\r\n;[]`. Writes to the rw mount at `/usr/local/etc/php-conf/php-custom.ini`. Restart via broker `/container`. |
+| `save_fpm.php` | POST | Validated FPM directives written to `/usr/local/etc/php-conf/www.conf`. Restart via broker `/container`. |
+| `create_db.php` | POST | `CREATE DATABASE … utf8mb4_unicode_ci`. Optional `CREATE USER` + grants — passwords must match `[A-Za-z0-9!@#%^&*()_+=\-]{8,64}` to prevent SQL injection via the password value. |
+| `drop_db.php` | POST | Requires `confirm` field to match the DB name exactly. System schemas (`mysql`, `information_schema`, `performance_schema`, `sys`) blocked. |
+| `manage_user.php` | POST | MySQL user CRUD. `safeUser` strips non-alphanumeric, `safeHost` allow-lists `localhost`/`127.0.0.1`/`::1`/`%`, `safePass` enforces the password regex. |
+| `container_action.php` | POST | Calls broker `/container` with name+action both allow-listed. Containers: `cid-php74`, `cid-nginx`, `cid-mariadb`, `cid-phpmyadmin`, `cid-redis`. Actions: `start`, `stop`, `restart`. |
+| `site_config.php` | POST | Read & write a per-site `site.json` metadata file. Domain regex-validated. |
 
 ---
 
@@ -254,9 +308,10 @@ Multi-step questionnaire for **Cressida 2026**, an alcohol-beverage market resea
 
 ### Database
 
-- Engine: MariaDB `dw_cressida` (or whatever `$_CONFIG` in `api/config.php` resolves to).
-- Connection: PDO, configured in `sites/opc2.bitco.link/public/api/config.php`. Switches between localhost and a remote host based on the request environment.
+- Engine: MariaDB `dw_cressida`. All credentials come from container env (`OPC2_DB_HOST`, `OPC2_DB_NAME`, `OPC2_DB_USER`, `OPC2_DB_PASSWORD`) — `api/config.php` reads them via `getenv()`. No secrets in source.
+- Connection: PDO, host `mariadb` (service name on `cid-network`).
 - Main table: `survey_main`. Other support tables hold labels, routing rules, and quotas.
+- All survey UPDATEs are parameterized; the column-name allow-list is derived at runtime from `INFORMATION_SCHEMA.COLUMNS` plus an explicit deny-list of server-managed columns (`status`, `idqr`, `enddate`, `lastq`, `hist`, etc.).
 
 ### File responsibilities
 
@@ -282,16 +337,42 @@ Multi-step questionnaire for **Cressida 2026**, an alcohol-beverage market resea
 
 ---
 
-## 7. Scripts
+## 7. Scripts & host services
 
 ### `scripts/collect_metrics.sh`
 
 - Designed to be invoked by cron every 5 minutes on the host.
 - Collects: CPU load (1m), CPU cores, total/used memory, total/used disk, uptime.
 - Writes JSON entry to `sites/opc.bitco.link/public/admin/data/metrics.json`, trimmed to a rolling window of **2016 entries** (= 7 days × 24 h × 12 samples/h).
-- Uses Python for the JSON append/trim step.
+- Path is derived from `$SCRIPT_DIR/../sites/…` so it works regardless of where the repo lives.
+- The Dashboard JS fetches `/admin/api/metrics.php` (auth-gated), not the raw file.
 
-The Dashboard module reads this file directly to render time-series and historical aggregates.
+### `scripts/cid-backup.sh` (+ `cid-backup.env.example`, `cid-backup-setup.md`)
+
+- Installed on the host as `/usr/local/bin/cid-backup`.
+- Nightly cron at 02:00 Asia/Bangkok (`/etc/cron.d/cid-backup`).
+- **What's backed up:** mysqldump of all DBs (streamed via `docker exec cid-mariadb`, never hits disk), `sites/`, and `docker/.env`.
+- **Where:** Backblaze B2 by default (`b2:<bucket>:cid`); the script accepts any restic backend via `RESTIC_REPOSITORY` (S3, R2, local dir, etc.).
+- **Encryption:** restic encrypts everything client-side with the passphrase from `/etc/cid-backup.env`. Lose the passphrase → backups are unreadable.
+- **Retention:** 7 daily / 4 weekly / 6 monthly; pruned via `restic forget --prune`.
+- **Integrity:** quick `restic check` every run, full 10% data-subset check on Sundays.
+- Logs: `/var/log/cid-backup.log`, rotated weekly by `/etc/logrotate.d/cid-backup`.
+- Restore: `restic restore latest --tag db|files --target /tmp/restore`. Full walkthrough in `scripts/cid-backup-setup.md`.
+
+### Host-only artifacts (not in git)
+
+Mirror these via your config-management tool if you ever rebuild the box:
+
+| Path | Purpose |
+|---|---|
+| `/etc/fail2ban/jail.local` | 4 jails (sshd, sftp, nginx-admin, nginx-8g) |
+| `/etc/fail2ban/filter.d/nginx-admin.conf` | matches POST /admin/ + 401 |
+| `/etc/fail2ban/filter.d/nginx-8g.conf` | matches *.access.log + 403 |
+| `/etc/ssh/sshd_config.d/99-hardening.conf` | SSH drop-in: `PasswordAuthentication no` + 14 other directives |
+| `/usr/local/bin/cid-backup` | backup script |
+| `/etc/cid-backup.env` | restic passphrase + B2 keys (0600 root) |
+| `/etc/cron.d/cid-backup` | nightly 02:00 Asia/Bangkok |
+| `/etc/logrotate.d/cid-backup` | weekly rotate, keep 12 |
 
 ---
 
@@ -301,20 +382,27 @@ The Dashboard module reads this file directly to render time-series and historic
 
 - Bcrypt hashing helper used in admin code path; Redis-backed sessions with `HttpOnly` and `SameSite=Lax`, `use_strict_mode=1`.
 - `open_basedir` restricts PHP filesystem access to `/var/www/sites:/tmp:/usr/share/php:/usr/local/bin:/proc`.
-- Docker network isolation; only nginx (9080), phpMyAdmin (9081), and SFTP (2222) are published to the host. MariaDB and Redis are reachable only inside `cid-network`.
-- Nginx rate limiting (`general` 10r/s, `login` 3r/s) and four always-on security response headers.
+- Docker network isolation; only nginx (9080), phpMyAdmin (9081), and SFTP (2222) are published to the host. MariaDB, Redis, and the broker are reachable only inside `cid-network` (broker not even on TCP — unix socket only).
+- **No Docker socket in `cid-php74`**, no Docker CLI either — privileged ops go through `cid-broker`'s tight HTTP API. PHP RCE no longer escalates to host.
+- **PHP-FPM listens on a unix socket** (`/run/php-fpm/www.sock`, mode 0660 `www-data:nginx`), not `0.0.0.0:9000`. No cross-container TCP path to FPM.
+- Nginx rate limiting (`general` 10r/s, `login` 3r/s on `/admin/` POST), four always-on security response headers, and the 8G detection ruleset blocking malicious request patterns.
 - Dangerous PHP functions disabled (`passthru`, `parse_ini_file`, `show_source`, `dl`).
-- `expose_php = Off`, `server_tokens off`, `X-Powered-By` stripped at FastCGI.
+- `expose_php = Off`, `display_errors = Off`, `server_tokens off`, `X-Powered-By` stripped at FastCGI.
+- All credentials in container env (admin bcrypt hash, MariaDB root, survey DB, SFTP, status tokens). Nothing hardcoded in source.
+- Admin auth: bcrypt `password_verify` + `hash_equals` + `session_regenerate_id(true)` + CSRF token enforced on every state-changing POST.
+- Survey SQL: all UPDATEs parameterized; column writes restricted to a `INFORMATION_SCHEMA`-driven allow-list with a deny-list overlay for server-managed columns.
+- Host-level **fail2ban** (4 jails: sshd, sftp, nginx-admin, nginx-8g) bans abusive IPs at iptables level.
+- Host-level **SSH hardened** (`PasswordAuthentication no`, key-only, root login disabled, all forwarding off, idle timeout, modern crypto baseline).
+- `container_action.php` and broker `/container` both enforce the same container + action allow-lists.
 - MariaDB slow-query logging at 2 s threshold.
-- `container_action.php` uses a fixed allow-list of containers it will operate on.
+- Nightly encrypted backups to Backblaze B2 via restic.
 
-**Caveats worth fixing before hardening for production**
+**Remaining caveats**
 
-- `display_errors = On` in `php-custom.ini` (kept on per request; flip off for prod).
-- `admin/index.php` line 14 effectively stores the admin password as a plaintext literal — the bcrypt construction on line 10 is unused for verification.
-- MariaDB root credentials are present in admin scripts that perform DB operations.
-- Admin endpoints shell out to `docker` via the mounted socket; input is allow-listed but every endpoint that takes user input should be re-audited if any privilege boundary is added.
-- SFTP password access is enabled by default (`PASSWORD_ACCESS=true`).
+- `docker/database/users_grants.sql` is committed to git and contains MySQL native-password hashes — purge with `git filter-repo` if you ever rotate the affected users.
+- PHP 7.4 is end-of-life; migration to 8.x is a separate project.
+- Bundled PHPExcel in `opc2/xls/` is deprecated (replaced by PhpSpreadsheet in 2017).
+- SFTP container still allows password auth (its sshd is separate from the host's hardened sshd); fail2ban protects it but rotating to key-based access would be stronger.
 
 ---
 
@@ -346,7 +434,14 @@ docker exec -i cid-mariadb mysql -u root -p"$MYSQL_ROOT_PASSWORD" < database/use
 
 ### Backups
 
-- DB dumps live at `docker/database/all_databases.sql` and `docker/database/users_grants.sql`. Refresh with `mysqldump` inside `cid-mariadb` before checkpointing.
+Automated nightly via `/usr/local/bin/cid-backup` → restic → Backblaze B2. See
+`scripts/cid-backup-setup.md` for B2 sign-up, configuration, restore commands,
+and disaster-recovery walkthrough.
+
+The seed dumps committed at `docker/database/all_databases.sql` and
+`docker/database/users_grants.sql` are for **initial cluster bootstrap only**.
+Day-to-day backups live in B2 (encrypted client-side) and rotate on the
+7d/4w/6m retention policy.
 
 ---
 
@@ -361,3 +456,6 @@ docker exec -i cid-mariadb mysql -u root -p"$MYSQL_ROOT_PASSWORD" < database/use
 - **Timezone**: every service is `Asia/Bangkok`. Match that in any new container.
 - **No host port for MariaDB/Redis**: keep it that way. Talk to them by service name (`mariadb`, `redis`) over `cid-network`.
 - **Caddy is the only TLS endpoint.** Application containers should not try to terminate HTTPS themselves.
+- **Privileged ops route through `cid-broker`.** Don't add `shell_exec("docker …")` back into `cid-php74`; add a new broker route instead. The broker container is the only one that should hold `/var/run/docker.sock`.
+- **Secrets stay in env.** `docker/.env` (gitignored) is the source of truth; reference values from compose with `${VAR}` and from PHP with `getenv()`. Never paste a credential into a `.php`, `.conf`, or template file.
+- **Generated nginx vhosts** (via `admin/api/add_site.php`) inherit `if ($block_all) { return 403; }` automatically. If you hand-write a vhost, include that line below `limit_req`.
