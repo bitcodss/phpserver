@@ -78,9 +78,13 @@ def _mysql(sql: str, scriptable: bool) -> dict[str, Any]:
     if not pw:
         return {"ok": False, "error": "MYSQL_ROOT_PASSWORD not set in broker env"}
     # MYSQL_PWD env keeps the password off the argv (and out of `ps`).
+    # --default-character-set=utf8mb4 means callers can insert emoji / CJK /
+    # any 4-byte UTF-8 without prepending "SET NAMES utf8mb4;" themselves.
+    # Bug surfaced during Phase 0.1 drill — emoji insert failed silently
+    # without the explicit charset. Fix is broker-wide, not per-callsite.
     argv = [
         "docker", "exec", "-e", f"MYSQL_PWD={pw}", "cid-mariadb",
-        "mysql", "-uroot",
+        "mariadb", "-uroot", "--default-character-set=utf8mb4",
     ]
     if scriptable:
         argv.append("-se")
