@@ -3,22 +3,21 @@
  * Security Overview & Settings
  */
 
-// Check various security settings
-$phpSettings = shell_exec("docker exec cid-php74 php -r \"
-    echo json_encode([
-        'expose_php' => ini_get('expose_php'),
-        'display_errors' => ini_get('display_errors'),
-        'allow_url_include' => ini_get('allow_url_include'),
-        'disable_functions' => ini_get('disable_functions'),
-        'open_basedir' => ini_get('open_basedir'),
-        'session.cookie_httponly' => ini_get('session.cookie_httponly'),
-        'session.cookie_secure' => ini_get('session.cookie_secure'),
-    ]);
-\" 2>/dev/null");
-$sec = $phpSettings ? json_decode($phpSettings, true) : [];
+// We're running inside cid-php74; just call ini_get() directly.
+$sec = [
+    'expose_php'              => ini_get('expose_php'),
+    'display_errors'          => ini_get('display_errors'),
+    'allow_url_include'       => ini_get('allow_url_include'),
+    'disable_functions'       => ini_get('disable_functions'),
+    'open_basedir'            => ini_get('open_basedir'),
+    'session.cookie_httponly' => ini_get('session.cookie_httponly'),
+    'session.cookie_secure'   => ini_get('session.cookie_secure'),
+];
 
 $checks = [
-    ['PHP version headers hidden', !empty($sec['expose_php']) && $sec['expose_php'] !== '1' && $sec['expose_php'] !== 'On', 'expose_php = Off'],
+    // ini_get('expose_php') returns "" when off, "1" when on. The OFF state
+    // is what we want, so the pass condition is "value is falsy/empty/Off".
+    ['PHP version headers hidden', in_array((string)($sec['expose_php'] ?? ''), ['', '0', 'Off', 'off'], true), 'expose_php = Off'],
     ['Error display disabled', empty($sec['display_errors']) || $sec['display_errors'] === '' || $sec['display_errors'] === '0' || $sec['display_errors'] === 'Off', 'display_errors = Off'],
     ['URL include disabled', empty($sec['allow_url_include']) || $sec['allow_url_include'] === '' || $sec['allow_url_include'] === '0', 'allow_url_include = Off'],
     ['Dangerous functions disabled', !empty($sec['disable_functions']), 'exec, passthru, shell_exec...'],

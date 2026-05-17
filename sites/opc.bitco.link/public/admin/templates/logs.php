@@ -2,20 +2,33 @@
 /**
  * Log Viewer
  */
-$source = $_GET['source'] ?? 'nginx-access';
-$lines = (int)($_GET['lines'] ?? 50);
+require_once __DIR__ . '/../_lib.php';
 
-$logCommands = [
-    'nginx-access' => "docker logs cid-nginx --tail $lines 2>/dev/null",
-    'nginx-error' => "docker logs cid-nginx --tail $lines 2>&1 >/dev/null",
-    'php-fpm' => "docker logs cid-php74 --tail $lines 2>&1",
-    'mariadb' => "docker logs cid-mariadb --tail $lines 2>&1",
-    'redis' => "docker logs cid-redis --tail $lines 2>&1",
+$source = $_GET['source'] ?? 'nginx-access';
+$lines = max(1, min(10000, (int)($_GET['lines'] ?? 50)));
+
+// Map UI source -> (container, stream). stream is 'stdout', 'stderr', or 'both'.
+$sourceMap = [
+    'nginx-access' => ['cid-nginx',   'stdout'],
+    'nginx-error'  => ['cid-nginx',   'stderr'],
+    'php-fpm'      => ['cid-php74',   'both'],
+    'mariadb'      => ['cid-mariadb', 'both'],
+    'redis'        => ['cid-redis',   'both'],
 ];
 
-$logOutput = '';
-if (isset($logCommands[$source])) {
-    $logOutput = shell_exec($logCommands[$source]) ?: '(no output)';
+$logOutput = '(no output)';
+if (isset($sourceMap[$source])) {
+    [$container, $stream] = $sourceMap[$source];
+    $r = brokerCall('/logs', ['name' => $container, 'tail' => $lines]);
+    if ($r['ok'] && isset($r['json'])) {
+        $stdout = (string)($r['json']['stdout'] ?? '');
+        $stderr = (string)($r['json']['stderr'] ?? '');
+        if     ($stream === 'stdout') $logOutput = $stdout !== '' ? $stdout : '(no output)';
+        elseif ($stream === 'stderr') $logOutput = $stderr !== '' ? $stderr : '(no output)';
+        else                          $logOutput = trim($stdout . $stderr) ?: '(no output)';
+    } else {
+        $logOutput = '(broker error: ' . ($r['json']['error'] ?? $r['body'] ?? 'unknown') . ')';
+    }
 }
 ?>
 

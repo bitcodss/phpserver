@@ -2,9 +2,11 @@
 /**
  * PHP Settings Management
  */
-$phpInfo = [];
-$rawIni = shell_exec("docker exec cid-php74 php -r \"echo json_encode(ini_get_all(null, false));\" 2>/dev/null");
-$allSettings = $rawIni ? json_decode($rawIni, true) : [];
+// We're running INSIDE cid-php74, so the live PHP config is whatever the
+// current process sees. Call ini_get_all() directly instead of round-tripping
+// through `docker exec cid-php74 php -r …`.
+$allSettings = ini_get_all(null, false) ?: [];
+$allSettings['PHP_VERSION'] = PHP_VERSION;
 
 // Key settings to display/edit
 $editableSettings = [
@@ -41,9 +43,7 @@ $editableSettings = [
     ],
 ];
 
-$extensions = [];
-$rawExt = shell_exec("docker exec cid-php74 php -r \"echo json_encode(get_loaded_extensions());\" 2>/dev/null");
-if ($rawExt) $extensions = json_decode($rawExt, true) ?: [];
+$extensions = get_loaded_extensions() ?: [];
 sort($extensions);
 ?>
 
@@ -98,8 +98,8 @@ sort($extensions);
 </div>
 
 <?php
-// Read current FPM config
-$fpmRaw = shell_exec("docker exec cid-php74 cat /usr/local/etc/php-fpm.d/www.conf 2>/dev/null") ?: '';
+// Read current FPM config — we're inside cid-php74, the file is local.
+$fpmRaw = @file_get_contents('/usr/local/etc/php-fpm.d/www.conf') ?: '';
 $fpmSettings = [];
 foreach (['pm', 'pm.max_children', 'pm.start_servers', 'pm.min_spare_servers', 'pm.max_spare_servers', 'pm.max_requests', 'pm.process_idle_timeout', 'request_slowlog_timeout'] as $key) {
     if (preg_match('/^' . preg_quote($key, '/') . '\s*=\s*(.+)$/m', $fpmRaw, $m)) {

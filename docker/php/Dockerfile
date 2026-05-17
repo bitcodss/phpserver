@@ -45,11 +45,10 @@ RUN pecl install redis-5.3.7 && docker-php-ext-enable redis
 # Install Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Install Docker CLI (for admin dashboard) - static binary
-RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-28.0.1.tgz | tar xz -C /tmp \
-    && mv /tmp/docker/docker /usr/local/bin/docker \
-    && rm -rf /tmp/docker \
-    && chmod +x /usr/local/bin/docker
+# Docker CLI is intentionally NOT installed here. Admin privileged operations
+# (container start/stop, mysql exec, nginx reload, Caddy admin POSTs) go to
+# cid-broker over a unix socket at /run/broker/broker.sock. cid-php74 has no
+# access to /var/run/docker.sock — that's what makes a PHP RCE survivable.
 
 # Create log directory
 RUN mkdir -p /var/log/php && chown www-data:www-data /var/log/php
@@ -59,7 +58,13 @@ RUN ln -sf /usr/share/zoneinfo/Asia/Bangkok /etc/localtime
 
 WORKDIR /var/www/sites
 
-# Add www-data to docker group (GID 112 on host) for socket access
-RUN groupadd -g 112 dockerhost && usermod -aG dockerhost www-data
+# Match the nginx alpine image's nginx group (GID 101) so the FPM unix socket
+# created with listen.group=nginx is readable by the cid-nginx container.
+RUN groupadd -g 101 nginx
+
+# The base image ships zz-docker.conf with [global] daemonize=no AND a [www]
+# listen=9000 that overrides our www.conf (alphabetical load order). Replace
+# it with the daemonize directive only — listen is set in our www.conf.
+RUN printf '[global]\ndaemonize = no\n' > /usr/local/etc/php-fpm.d/zz-docker.conf
 
 EXPOSE 9000

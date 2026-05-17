@@ -5,24 +5,44 @@
  */
 session_start();
 
-// Auth check
-define('ADMIN_USER', 'admin');
-define('ADMIN_PASS_HASH', '$2y$10$' . substr(password_hash('CidAdmin2026!', PASSWORD_BCRYPT), 7));
+$adminUser = getenv('ADMIN_USER') ?: '';
+$adminHash = getenv('ADMIN_PASS_HASH') ?: '';
+if ($adminUser === '' || $adminHash === '') {
+    http_response_code(500);
+    exit('Admin credentials not configured (set ADMIN_USER and ADMIN_PASS_HASH in .env, then restart cid-php74).');
+}
 
 if (!isset($_SESSION['authenticated'])) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['username'], $_POST['password'])) {
-        if ($_POST['username'] === ADMIN_USER && $_POST['password'] === 'CidAdmin2026!') {
+        $userOk = hash_equals($adminUser, (string)$_POST['username']);
+        $passOk = password_verify((string)$_POST['password'], $adminHash);
+        if ($userOk && $passOk) {
+            session_regenerate_id(true);
             $_SESSION['authenticated'] = true;
+            $_SESSION['csrf'] = bin2hex(random_bytes(32));
             header('Location: /admin/');
             exit;
         }
+        // Emit 401 on failed login so fail2ban can match cleanly on the
+        // nginx access log. The form still renders below so the human
+        // experience is unchanged.
+        http_response_code(401);
         $error = 'Invalid credentials';
     }
     showLogin($error ?? null);
     exit;
 }
 
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+
 if (isset($_GET['logout'])) {
+    $_SESSION = [];
+    if (ini_get('session.use_cookies')) {
+        $p = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000, $p['path'], $p['domain'], $p['secure'], $p['httponly']);
+    }
     session_destroy();
     header('Location: /admin/');
     exit;
@@ -135,6 +155,7 @@ $page = $_GET['page'] ?? 'dashboard';
     </div>
     <div id="toast" class="toast"></div>
     <script>
+    const CSRF_TOKEN = <?= json_encode($_SESSION['csrf']) ?>;
     function showToast(msg, type='success') {
         const t = document.getElementById('toast');
         t.textContent = msg;
@@ -145,7 +166,7 @@ $page = $_GET['page'] ?? 'dashboard';
     async function apiCall(endpoint, data={}) {
         const res = await fetch('/admin/api/' + endpoint, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN},
             body: JSON.stringify(data)
         });
         return res.json();

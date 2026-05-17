@@ -2,6 +2,7 @@
 /**
  * Sites Management — Add/remove PHP sites + domains
  */
+require_once __DIR__ . '/../_lib.php';
 
 // Scan site directories (sites are at /var/www/sites/*)
 $sitesBase = '/var/www/sites';
@@ -30,13 +31,13 @@ foreach (glob($sitesBase . '/*') as $d) {
 
 // Get existing databases for the modal
 $dbList = [];
-$dbRaw = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys');\" 2>/dev/null");
-if ($dbRaw) $dbList = array_filter(array_map('trim', explode("\n", trim($dbRaw))));
+$dbRaw = mysqlQuery("SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys');");
+if ($dbRaw !== '') $dbList = array_filter(array_map('trim', explode("\n", trim($dbRaw))));
 
 // Get existing users for the modal
 $userList = [];
-$userRaw = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"SELECT CONCAT(User,'@',Host) FROM mysql.user WHERE User NOT IN ('root','mariadb.sys','');\" 2>/dev/null");
-if ($userRaw) $userList = array_filter(array_map('trim', explode("\n", trim($userRaw))));
+$userRaw = mysqlQuery("SELECT CONCAT(User,'@',Host) FROM mysql.user WHERE User NOT IN ('root','mariadb.sys','');");
+if ($userRaw !== '') $userList = array_filter(array_map('trim', explode("\n", trim($userRaw))));
 ?>
 
 <h2 class="page-title">🌐 Sites Management</h2>

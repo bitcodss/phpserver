@@ -3,9 +3,18 @@
  * API: Add new PHP site
  * Supports: new/existing database, new/existing user, site name/description
  */
-session_start();
-header('Content-Type: application/json');
-if (!isset($_SESSION['authenticated'])) { die(json_encode(['ok' => false, 'error' => 'Unauthorized'])); }
+require __DIR__ . '/_bootstrap.php';
+
+function safePass($s) {
+    $s = (string)$s;
+    if (!preg_match('/^[A-Za-z0-9!@#%^&*()_+=\-]{8,64}$/', $s)) return null;
+    return $s;
+}
+function safeUser($s) { return preg_replace('/[^a-zA-Z0-9_]/', '', (string)$s); }
+function safeHost($s) {
+    $s = (string)$s;
+    return ($s === 'localhost' || $s === '127.0.0.1' || $s === '::1') ? $s : '%';
+}
 
 $input = json_decode(file_get_contents('php://input'), true);
 $domain = strtolower($input['domain'] ?? '');
@@ -17,7 +26,6 @@ $userOption = $input['userOption'] ?? 'new'; // new, existing
 $userName = $input['userName'] ?? '';
 $userPass = $input['userPass'] ?? '';
 
-// Validate domain
 if (!preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/', $domain)) {
     die(json_encode(['ok' => false, 'error' => 'Invalid domain format']));
 }
@@ -37,14 +45,16 @@ if (!$mkResult) {
     $detail = $err['message'] ?? 'unknown';
     die(json_encode(['ok' => false, 'error' => "Failed to create directory: $detail (path: $siteDir/public)"]));
 }
-// Ensure www-data can write inside
-@chmod($siteDir, 0777);
-@chmod("$siteDir/public", 0777);
+// Keep permissions tight; www-data already owns these via fpm worker.
+@chmod($siteDir, 0755);
+@chmod("$siteDir/public", 0755);
 
-// 2. Create default index.php
-$escapedLabel = htmlspecialchars($label);
-$indexContent = "<?php\necho \"<h1>$escapedLabel</h1>\";\necho \"<p>PHP \" . phpversion() . \" — Managed by ศ.Cid</p>\";\necho \"<p>\" . date('Y-m-d H:i:s T') . \"</p>\";\n";
-file_put_contents("$siteDir/public/index.php", $indexContent);
+// 2. Create a static landing index.html (avoids interpolating user input into PHP source).
+$indexContent = "<!doctype html><meta charset=\"utf-8\"><title>"
+    . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . "</title>"
+    . "<h1>" . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . "</h1>"
+    . "<p>Site created via ศ.Cid admin.</p>";
+file_put_contents("$siteDir/public/index.html", $indexContent);
 
 // 3. Create Nginx vhost config
 $nginxConf = "server {
@@ -59,13 +69,16 @@ $nginxConf = "server {
 
     limit_req zone=general burst=20 nodelay;
 
+    # 8G firewall — _8g.conf defines the detection maps at http {} level.
+    if (\$block_all) { return 403; }
+
     location ~ /\\. { deny all; return 404; }
-    location ~* \\.(env|git|htaccess|htpasswd|ini|log|sh|sql|bak|conf)\$ { deny all; return 404; }
+    location ~* \\.(env|git|htaccess|htpasswd|ini|log|sh|sql|bak|conf|test|orig|old)\$ { deny all; return 404; }
 
     location ~ \\.php\$ {
         try_files \$uri =404;
         fastcgi_split_path_info ^(.+\\.php)(/.+)\$;
-        fastcgi_pass php74:9000;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
@@ -88,43 +101,50 @@ $nginxConf = "server {
     }
 }";
 
-// Save nginx conf to sites dir first (open_basedir allows this)
+// Save nginx conf to sites dir first (open_basedir allows this), then copy into conf.d.
+// We shell out to /bin/cp because PHP's open_basedir restriction blocks
+// writing under /etc/ — cp is a subprocess so it's not subject to it. $domain
+// is already validated against a strict regex above.
 @mkdir("$sitesBase/_config/nginx", 0755, true);
 file_put_contents("$sitesBase/_config/nginx/$domain.conf", $nginxConf);
-
-// Copy to nginx conf.d via shell (open_basedir blocks direct write to /etc/nginx)
 shell_exec("cp " . escapeshellarg("$sitesBase/_config/nginx/$domain.conf") . " " . escapeshellarg("/etc/nginx/conf.d/$domain.conf") . " 2>&1");
 
 // 4. Handle Database
 $dbInfo = null;
 if ($dbOption !== 'none' && $dbName) {
     $safeDbName = preg_replace('/[^a-z0-9_]/', '_', $dbName);
-    
+
     if ($dbOption === 'new') {
-        // Create new database
-        $sql = "CREATE DATABASE IF NOT EXISTS `$safeDbName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
-        shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -e " . escapeshellarg($sql) . " 2>&1");
+        mysqlExec("CREATE DATABASE IF NOT EXISTS `$safeDbName` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
     }
-    
+
     $dbInfo = ['database' => $safeDbName];
-    
-    // Handle user
+
     if ($userOption === 'new' && $userName) {
-        $safeUser = preg_replace('/[^a-z0-9_]/', '', $userName);
-        $pass = $userPass ?: bin2hex(random_bytes(8));
-        $sql = "CREATE USER IF NOT EXISTS '$safeUser'@'%' IDENTIFIED BY '$pass'; " .
-               "GRANT ALL PRIVILEGES ON `$safeDbName`.* TO '$safeUser'@'%'; " .
-               "FLUSH PRIVILEGES;";
-        shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -e " . escapeshellarg($sql) . " 2>&1");
-        $dbInfo['user'] = $safeUser;
+        $safeNewUser = safeUser($userName);
+        if (!$safeNewUser) {
+            die(json_encode(['ok' => false, 'error' => 'Invalid username']));
+        }
+        if ($userPass === '') {
+            $pass = bin2hex(random_bytes(8));
+        } else {
+            $pass = safePass($userPass);
+            if ($pass === null) {
+                die(json_encode(['ok' => false, 'error' => 'Password must be 8-64 chars (alphanum + !@#%^&*()_+=- only)']));
+            }
+        }
+        mysqlExec("CREATE USER IF NOT EXISTS '$safeNewUser'@'%' IDENTIFIED BY '$pass';");
+        mysqlExec("GRANT ALL PRIVILEGES ON `$safeDbName`.* TO '$safeNewUser'@'%'; FLUSH PRIVILEGES;");
+        $dbInfo['user'] = $safeNewUser;
         $dbInfo['password'] = $pass;
     } elseif ($userOption === 'existing' && $userName) {
-        // Grant existing user access to the database
         $parts = explode('@', $userName);
-        $existUser = $parts[0];
-        $existHost = $parts[1] ?? '%';
-        $sql = "GRANT ALL PRIVILEGES ON `$safeDbName`.* TO '$existUser'@'$existHost'; FLUSH PRIVILEGES;";
-        shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -e " . escapeshellarg($sql) . " 2>&1");
+        $existUser = safeUser($parts[0] ?? '');
+        $existHost = safeHost($parts[1] ?? '%');
+        if (!$existUser) {
+            die(json_encode(['ok' => false, 'error' => 'Invalid existing username']));
+        }
+        mysqlExec("GRANT ALL PRIVILEGES ON `$safeDbName`.* TO '$existUser'@'$existHost'; FLUSH PRIVILEGES;");
         $dbInfo['user'] = $existUser;
         $dbInfo['password'] = '(existing)';
     }
@@ -149,28 +169,20 @@ $caddyPayload = json_encode([
     'terminal' => true
 ]);
 
-// Save caddy config for reference
 file_put_contents("$sitesBase/_config/nginx/$domain.caddy.json", $caddyPayload);
 
-// 5b. Add Caddy route via API (auto-SSL) — use docker to curl host's Caddy API
 $enableSsl = $input['enableSsl'] ?? true;
 $sslStatus = 'disabled';
 if ($enableSsl) {
-    // Use docker run --network=host with inline JSON (no file mount needed)
-    $escapedPayload = escapeshellarg($caddyPayload);
-    $cmd = "docker run --rm --network=host curlimages/curl:latest " .
-           "-s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:2019/config/apps/http/servers/srv0/routes " .
-           "-H 'Content-Type: application/json' " .
-           "-d $escapedPayload 2>&1";
-    $caddyOut = trim(shell_exec($cmd));
-    
-    $sslStatus = ($caddyOut === '200') ? 'auto (Caddy)' : 'pending (Caddy: ' . $caddyOut . ')';
+    $r = brokerCall('/caddy/route', ['payload' => json_decode($caddyPayload, true)]);
+    $http = $r['json']['http'] ?? '0';
+    $sslStatus = ($http === '200') ? 'auto (Caddy)' : 'pending (Caddy: ' . $http . ')';
 }
 
-// 6. Reload Nginx to pick up new config
-shell_exec("docker exec cid-nginx nginx -s reload 2>&1");
+brokerCall('/nginx/reload');
 
-// 7. Save site metadata
+$serverIp = $_SERVER['SERVER_ADDR'] ?? gethostbyname(gethostname());
+
 $siteConfig = [
     'domain' => $domain,
     'label' => $label,
@@ -186,10 +198,10 @@ file_put_contents("$siteDir/site.json", json_encode($siteConfig, JSON_PRETTY_PRI
 echo json_encode([
     'ok' => true,
     'domain' => $domain,
-    'serverIp' => '139.59.119.101',
+    'serverIp' => $serverIp,
     'database' => $dbInfo,
     'ssl' => $sslStatus,
-    'note' => $enableSsl 
-        ? "Site created with auto-SSL. Add DNS A record: $domain → 139.59.119.101"
-        : "Site created (SSL disabled). Add DNS A record: $domain → 139.59.119.101"
+    'note' => $enableSsl
+        ? "Site created with auto-SSL. Add DNS A record: $domain → $serverIp"
+        : "Site created (SSL disabled). Add DNS A record: $domain → $serverIp"
 ]);

@@ -1,8 +1,15 @@
 #!/bin/bash
 # Metrics collector for ศ.Cid Dashboard
-# Runs every 5 minutes via cron, appends to JSON file
+# Runs every 5 minutes via cron, appends to JSON file.
+#
+# Install:
+#   crontab -e
+#   */5 * * * * /home/bitcodata/phpserver/scripts/collect_metrics.sh
+#
+# Override METRICS_FILE in the env if the repo lives elsewhere.
 
-METRICS_FILE="/home/openclaw/.openclaw/workspace-cid/sites/opc.bitco.link/public/admin/data/metrics.json"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+METRICS_FILE="${METRICS_FILE:-$SCRIPT_DIR/../sites/opc.bitco.link/public/admin/data/metrics.json}"
 mkdir -p "$(dirname "$METRICS_FILE")"
 
 # Collect metrics

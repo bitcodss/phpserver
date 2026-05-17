@@ -2,18 +2,20 @@
 /**
  * Dashboard — Server Overview + Monitoring Graphs
  */
+require_once __DIR__ . '/../_lib.php';
 
-// Container status
-$containers = ['cid-php74', 'cid-nginx', 'cid-mariadb', 'cid-phpmyadmin', 'cid-redis', 'cid-sftp'];
+// Container status — single broker round-trip for all containers.
+$containers = ['cid-php74', 'cid-nginx', 'cid-mariadb', 'cid-phpmyadmin', 'cid-redis', 'cid-sftp', 'cid-broker'];
 $statuses = [];
+$r = brokerCall('/container/status', ['names' => $containers]);
+$brokerStatuses = $r['json']['statuses'] ?? [];
 foreach ($containers as $c) {
-    $out = shell_exec("docker inspect --format='{{.State.Status}}|{{.State.StartedAt}}' $c 2>&1");
-    $parts = explode('|', trim($out ?? ''));
-    $dateStr = isset($parts[1]) ? preg_replace('/\.\d+Z$/', 'Z', $parts[1]) : '';
-    $ts = strtotime($dateStr);
+    $entry = $brokerStatuses[$c] ?? ['status' => 'unknown', 'started_at' => null];
+    $dateStr = isset($entry['started_at']) ? preg_replace('/\.\d+Z$/', 'Z', $entry['started_at']) : '';
+    $ts = $dateStr ? strtotime($dateStr) : false;
     $statuses[$c] = [
-        'status' => $parts[0] ?? 'unknown',
-        'started' => $ts ? date('Y-m-d H:i', $ts) : 'N/A'
+        'status' => $entry['status'] ?? 'unknown',
+        'started' => $ts ? date('Y-m-d H:i', $ts) : 'N/A',
     ];
 }
 $running = count(array_filter($statuses, fn($s) => $s['status'] === 'running'));
@@ -54,7 +56,7 @@ $sites = array_filter(glob(dirname($sitesDir) . '/*'), 'is_dir');
 $siteCount = count($sites);
 
 // DB count
-$dbCountRaw = trim(shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys');\" 2>/dev/null") ?: '0');
+$dbCountRaw = trim(mysqlQuery("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys');")) ?: '0';
 ?>
 
 <h2 class="page-title">📊 Dashboard</h2>
@@ -63,7 +65,7 @@ $dbCountRaw = trim(shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB
 <div class="card" style="margin-bottom:24px;padding:16px 24px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
         <strong style="font-size:1.1rem">🖥️ opc-server</strong>
-        <span style="color:var(--muted);font-size:0.85rem"><?= $osInfo ?> • <?= $cpuCores ?> cores • 139.59.119.101</span>
+        <span style="color:var(--muted);font-size:0.85rem"><?= htmlspecialchars($osInfo) ?> • <?= (int)$cpuCores ?> cores • <?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? gethostbyname(gethostname())) ?></span>
     </div>
     <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap:16px; margin:0">
         <!-- Load -->
@@ -185,7 +187,7 @@ function downsample(arr, maxPoints) {
 
 async function loadMetrics() {
     try {
-        const r = await fetch('/admin/data/metrics.json?_=' + Date.now());
+        const r = await fetch('/admin/api/metrics.php?_=' + Date.now());
         metricsData = await r.json();
     } catch(e) { metricsData = []; }
     updateCharts();
@@ -226,7 +228,22 @@ function updateCharts() {
     const hours = parseInt(document.getElementById('loadRange').value);
     const raw = filterByHours(hours);
     const data = downsample(raw, 60);
-    if (!data.length) return;
+    if (!data.length) {
+        const msg = metricsData.length === 0
+            ? 'No metrics yet. Install the cron: */5 * * * * /home/bitcodata/phpserver/scripts/collect_metrics.sh'
+            : 'No data in the selected window. Try a wider range or wait for collect_metrics.sh to run.';
+        ['loadChart','memChart','diskChart','combinedChart'].forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const ctx = el.getContext('2d');
+            ctx.clearRect(0, 0, el.width, el.height);
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(msg, el.width / 2, el.height / 2);
+        });
+        return;
+    }
 
     const labels = data.map(m => formatTime(m.ts));
 

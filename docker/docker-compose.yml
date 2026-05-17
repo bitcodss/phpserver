@@ -8,29 +8,42 @@ services:
     restart: unless-stopped
     volumes:
       - ../sites:/var/www/sites
+      - ./php/conf:/usr/local/etc/php-conf
       - ./php/conf/php-custom.ini:/usr/local/etc/php/conf.d/99-custom.ini:ro
       - ./php/conf/www.conf:/usr/local/etc/php-fpm.d/www.conf:ro
-      - /var/run/docker.sock:/var/run/docker.sock
       - ./nginx/conf.d:/etc/nginx/conf.d
+      - fpm-socket:/run/php-fpm
+      - broker-socket:/run/broker:ro
     networks:
       - cid-network
     environment:
-      - TZ=Asia/Bangkok
+      TZ: Asia/Bangkok
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS_HASH: ${ADMIN_PASS_HASH}
+      OPC2_DB_HOST: ${OPC2_DB_HOST}
+      OPC2_DB_NAME: ${OPC2_DB_NAME}
+      OPC2_DB_USER: ${OPC2_DB_USER}
+      OPC2_DB_PASSWORD: ${OPC2_DB_PASSWORD}
+      OPC2_STATUS_TOKEN: ${OPC2_STATUS_TOKEN}
+      OPC2_RAWDATA_TOKEN: ${OPC2_RAWDATA_TOKEN}
     depends_on:
       - mariadb
       - redis
+      - broker
 
   nginx:
     image: nginx:1.24-alpine
     container_name: cid-nginx
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9080:80"
+      - "9080:80"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../sites:/var/www/sites
       - ./logs/nginx:/var/log/nginx
+      - fpm-socket:/run/php-fpm:ro
     networks:
       - cid-network
     depends_on:
@@ -41,10 +54,10 @@ services:
     container_name: cid-mariadb
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-CidMariaDB2026!}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-opc_db}
-      MYSQL_USER: ${MYSQL_USER:-opc_user}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-OpcUser2026!}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set in .env}
       TZ: Asia/Bangkok
     volumes:
       - mariadb-data:/var/lib/mysql
@@ -65,7 +78,7 @@ services:
     container_name: cid-phpmyadmin
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9081:80"
+      - "9081:80"
     environment:
       PMA_HOST: mariadb
       PMA_PORT: 3306
@@ -86,21 +99,55 @@ services:
     networks:
       - cid-network
 
+  broker:
+    build:
+      context: ./broker
+      dockerfile: Dockerfile
+    container_name: cid-broker
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - broker-socket:/run/broker
+    networks:
+      - cid-network
+    extra_hosts:
+      # Lets the broker reach the host's Caddy admin without --network=host.
+      - "host.docker.internal:host-gateway"
+    environment:
+      TZ: Asia/Bangkok
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://host.docker.internal:2019}
+
   sftp:
-    image: atmoz/sftp:alpine
+    image: lscr.io/linuxserver/openssh-server:latest
     container_name: cid-sftp
     restart: unless-stopped
     ports:
-      - "2222:22"
+      - "2222:2222"
     volumes:
-      - ../sites:/home/webmaster/sites
-    command: "webmaster:CidSFTP2026!:1000:1000"
+      - ../sites:/config/sites
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Bangkok
+      - USER_NAME=${SFTP_USER}
+      - USER_PASSWORD=${SFTP_PASSWORD}
+      - PASSWORD_ACCESS=true
+      - LOG_STDOUT=true
     networks:
       - cid-network
 
 volumes:
   mariadb-data:
   redis-data:
+  fpm-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+  broker-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
 
 networks:
   cid-network:

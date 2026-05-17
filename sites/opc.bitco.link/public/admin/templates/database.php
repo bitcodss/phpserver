@@ -2,18 +2,20 @@
 /**
  * Database & Users Management (RunCloud-style tabs)
  */
+require_once __DIR__ . '/../_lib.php';
+
 $tab = $_GET['tab'] ?? 'databases';
 
 // Get databases
-$dbInfo = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"
+$dbInfo = mysqlQuery("
     SELECT table_schema, COUNT(*), ROUND(SUM(data_length+index_length)/1024/1024,2), s.DEFAULT_COLLATION_NAME
     FROM information_schema.tables t
     JOIN information_schema.schemata s ON t.table_schema = s.schema_name
     WHERE table_schema NOT IN ('information_schema','performance_schema','mysql','sys')
     GROUP BY table_schema;
-\" 2>/dev/null");
+");
 $databases = [];
-if ($dbInfo) {
+if ($dbInfo !== '') {
     foreach (explode("\n", trim($dbInfo)) as $line) {
         $parts = preg_split('/\t/', $line);
         if (count($parts) >= 4) {
@@ -22,12 +24,12 @@ if ($dbInfo) {
     }
 }
 // Also get empty databases
-$emptyDbs = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"
+$emptyDbs = mysqlQuery("
     SELECT schema_name, DEFAULT_COLLATION_NAME FROM information_schema.schemata
     WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys')
     AND schema_name NOT IN (SELECT DISTINCT table_schema FROM information_schema.tables);
-\" 2>/dev/null");
-if ($emptyDbs) {
+");
+if ($emptyDbs !== '') {
     foreach (explode("\n", trim($emptyDbs)) as $line) {
         $parts = preg_split('/\t/', $line);
         if (count($parts) >= 2) {
@@ -37,15 +39,15 @@ if ($emptyDbs) {
 }
 
 // Get users
-$userInfo = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"
+$userInfo = mysqlQuery("
     SELECT u.User, u.Host, GROUP_CONCAT(DISTINCT d.Db ORDER BY d.Db SEPARATOR ', ')
     FROM mysql.user u
     LEFT JOIN mysql.db d ON u.User = d.User AND u.Host = d.Host
     WHERE u.User NOT IN ('root','mariadb.sys','','healthcheck')
     GROUP BY u.User, u.Host;
-\" 2>/dev/null");
+");
 $users = [];
-if ($userInfo) {
+if ($userInfo !== '') {
     foreach (explode("\n", trim($userInfo)) as $line) {
         $parts = preg_split('/\t/', $line);
         if (count($parts) >= 2) {
@@ -55,9 +57,9 @@ if ($userInfo) {
 }
 
 // DB status
-$dbStatus = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -se \"SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime','Threads_connected','Questions','Slow_queries');\" 2>/dev/null");
+$dbStatus = mysqlQuery("SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime','Threads_connected','Questions','Slow_queries');");
 $status = [];
-if ($dbStatus) {
+if ($dbStatus !== '') {
     foreach (explode("\n", trim($dbStatus)) as $line) {
         $parts = preg_split('/\s+/', $line, 2);
         if (count($parts) === 2) $status[$parts[0]] = $parts[1];
@@ -178,9 +180,9 @@ $upHours = isset($status['Uptime']) ? round($status['Uptime'] / 3600, 1) : 'N/A'
 <div class="card" style="margin-top:24px">
     <h3 style="margin-bottom:12px">🔑 Connection Info</h3>
     <table style="width:auto">
-        <tr><td style="color:var(--muted);padding:4px 16px 4px 0">Host (from PHP)</td><td><code>cid-mariadb</code></td></tr>
+        <tr><td style="color:var(--muted);padding:4px 16px 4px 0">Host (from PHP)</td><td><code>mariadb</code></td></tr>
         <tr><td style="color:var(--muted);padding:4px 16px 4px 0">Port</td><td><code>3306</code></td></tr>
-        <tr><td style="color:var(--muted);padding:4px 16px 4px 0">Root Password</td><td><code>CidMariaDB2026!</code></td></tr>
+        <tr><td style="color:var(--muted);padding:4px 16px 4px 0">Root Password</td><td><code>(see docker/.env: MYSQL_ROOT_PASSWORD)</code></td></tr>
     </table>
 </div>
 

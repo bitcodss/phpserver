@@ -1,7 +1,5 @@
 <?php
-session_start();
-header('Content-Type: application/json');
-if (!isset($_SESSION['authenticated'])) { die(json_encode(['ok' => false, 'error' => 'Unauthorized'])); }
+require __DIR__ . '/_bootstrap.php';
 
 $input = json_decode(file_get_contents('php://input'), true);
 $domain = $input['domain'] ?? '';

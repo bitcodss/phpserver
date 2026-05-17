@@ -1,22 +1,25 @@
 <?php
-session_start();
-header('Content-Type: application/json');
-if (!isset($_SESSION['authenticated'])) { die(json_encode(['ok' => false, 'error' => 'Unauthorized'])); }
+require __DIR__ . '/_bootstrap.php';
 
 $input = json_decode(file_get_contents('php://input'), true);
 $name = $input['name'] ?? '';
+$confirm = $input['confirm'] ?? '';
 
 if (!preg_match('/^[a-z0-9_]{1,64}$/', $name)) {
     die(json_encode(['ok' => false, 'error' => 'Invalid database name']));
 }
 
-// Safety: prevent dropping system databases
 $protected = ['mysql', 'information_schema', 'performance_schema', 'sys'];
-if (in_array($name, $protected)) {
+if (in_array($name, $protected, true)) {
     die(json_encode(['ok' => false, 'error' => 'Cannot drop system database']));
 }
 
-$out = shell_exec("docker exec cid-mariadb mysql -uroot -pCidMariaDB2026! -e \"DROP DATABASE IF EXISTS \`$name\`;\" 2>&1");
+// Require the client to echo the DB name back as a typed confirmation.
+if ($confirm !== $name) {
+    die(json_encode(['ok' => false, 'error' => 'Confirmation mismatch: type the database name to confirm']));
+}
+
+$out = mysqlExec("DROP DATABASE IF EXISTS `$name`;");
 
 if (strpos($out, 'ERROR') !== false) {
     echo json_encode(['ok' => false, 'error' => trim($out)]);

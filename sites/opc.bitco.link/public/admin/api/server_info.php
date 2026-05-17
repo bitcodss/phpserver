@@ -1,11 +1,11 @@
 <?php
-session_start();
-header('Content-Type: application/json');
-if (!isset($_SESSION['authenticated'])) { die(json_encode(['ok' => false, 'error' => 'Unauthorized'])); }
+require __DIR__ . '/_bootstrap.php';
+
+$ip = $_SERVER['SERVER_ADDR'] ?? gethostbyname(gethostname());
 
 echo json_encode([
     'ok' => true,
-    'ip' => '139.59.119.101',
+    'ip' => $ip,
     'hostname' => gethostname(),
     'php' => PHP_VERSION,
     'time' => date('Y-m-d H:i:s T'),
