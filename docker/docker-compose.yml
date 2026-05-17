@@ -119,13 +119,22 @@ services:
       # ---- Config-backup sources (read-only) ----
       # The __system_config_backup__ job tars these together so a fresh-host
       # rebuild can put everything back. Restic encrypts the stream client-side.
+      # See sites/.../admin/data/.tar embedded RESTORE-NOTES.txt for the
+      # ownership / restorability annotation of each path.
       - /etc/cid-backup.env:/host-config/cid-backup.env:ro
       - ./.env:/host-config/docker.env:ro
       - ./docker-compose.yml:/host-config/docker-compose.yml:ro
       - /etc/cron.d:/host-config/cron.d:ro
       - /etc/ssh/sshd_config.d:/host-config/sshd_config.d:ro
-      - /var/lib/caddy:/host-config/caddy:ro
+      - /etc/fail2ban:/host-config/fail2ban:ro
+      - /home/bitcodata/.ssh/authorized_keys:/host-config/authorized_keys:ro
+      - /var/spool/cron/crontabs:/host-config/user-crontabs:ro
+      - /etc/docker/daemon.json:/host-config/docker-daemon.json:ro
       - /var/lib/dpkg:/host-config/dpkg:ro
+      # NOTE: /var/lib/caddy/ intentionally removed in Phase 0.2.1 — Caddy
+      # runs in the openclaw-caddy-1 container, owned by the separate
+      # `openclaw` project. The host /var/lib/caddy/ is empty on this box
+      # and including it was misleading. Caddy DR belongs to openclaw.
     networks:
       - cid-network
     extra_hosts:

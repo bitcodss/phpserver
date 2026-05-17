@@ -651,8 +651,106 @@ CONFIG_BACKUP_PATHS = [
     "/host-config/docker-compose.yml",
     "/host-config/cron.d",
     "/host-config/sshd_config.d",
-    "/host-config/caddy",
+    "/host-config/fail2ban",          # 0.2.1: jail.local + custom filters
+    "/host-config/authorized_keys",   # 0.2.1: bitcodata's SSH public key
+    "/host-config/user-crontabs",     # 0.2.1: includes collect_metrics.sh + other apps (see README)
+    "/host-config/docker-daemon.json",# 0.2.1: nvidia runtime registration
 ]
+# (/host-config/caddy removed in 0.2.1 — owned by openclaw project, not phpserver.)
+
+# Human-readable README written into every config-backup tar.
+_USER_CRONTAB_README = """\
+user-crontabs/ — bitcodata's crontab spool file
+=================================================
+
+This directory captures the raw /var/spool/cron/crontabs/ files at backup
+time. On this host, the user 'bitcodata' has one crontab containing entries
+from MULTIPLE projects:
+
+  - phpserver:   collect_metrics.sh (every 5 minutes) — RESTORE THIS
+  - openclaw:    media-cleanup entries (daily 03:00)  — out of phpserver DR scope
+  - vllm/gpu:    docker-compose up/stop schedule      — out of phpserver DR scope
+
+When restoring phpserver during disaster recovery:
+  - Re-install ONLY the entries owned by phpserver (the collect_metrics.sh line).
+  - Other entries are restored by their respective projects' own DR processes.
+  - If the new host won't run openclaw/vllm, simply omit those lines.
+
+To install: copy the file back to /var/spool/cron/crontabs/bitcodata
+(mode 0600, owner bitcodata:crontab) then `systemctl reload cron`.
+Or use `crontab -u bitcodata <file>`.
+"""
+
+_RESTORE_NOTES = """\
+=============================================================
+ ศ.Cid config-backup archive — RESTORE NOTES
+=============================================================
+
+This tarball is produced by the __system_config_backup__ job. It contains
+the host-side config phpserver needs to function. Paths are rooted under
+host-config/ mirroring their on-host locations.
+
+----- RESTORABLE AS-IS (phpserver-owned) ---------------------
+
+host-config/cid-backup.env       → /etc/cid-backup.env       (chmod 0640 root:docker)
+host-config/docker.env           → docker/.env               in repo
+host-config/docker-compose.yml   → docker/docker-compose.yml in repo
+host-config/cron.d/cid-backup    → /etc/cron.d/cid-backup    (chmod 0644)
+host-config/sshd_config.d/99-hardening.conf
+                                 → /etc/ssh/sshd_config.d/99-hardening.conf
+host-config/fail2ban/            → /etc/fail2ban/            (CRITICAL — restore intact)
+host-config/authorized_keys      → /home/bitcodata/.ssh/authorized_keys
+                                   (chmod 0600 bitcodata:bitcodata)
+
+----- RESTORE PARTIALLY (filter required) --------------------
+
+host-config/cron.d/*             → Other files (anacron, apt-compat, sysstat, ...)
+                                   are distro-default; only the cid-backup line
+                                   is phpserver-owned.
+host-config/user-crontabs/bitcodata
+                                 → See user-crontab-README.txt — three projects share
+                                   this file. Cherry-pick phpserver's lines only.
+
+----- REFERENCE ONLY (host-specific, do NOT restore as-is) ---
+
+host-config/docker-daemon.json   → Contains nvidia runtime registration; needed
+                                   only if the new host runs GPU containers.
+dpkg-selections.txt              → Full host package list at backup time. Use as
+                                   reference for `apt install` on rebuild; many
+                                   packages are unrelated to phpserver.
+
+----- EXTERNAL DEPENDENCIES (NOT in this archive) ------------
+
+Caddy state                      → Caddy runs in the openclaw-caddy-1 container,
+                                   owned by the separate `openclaw` project.
+                                   Restore openclaw BEFORE phpserver, and verify
+                                   openclaw-caddy is running first.
+
+Host network config              → /etc/netplan/*.yaml is intentionally not
+                                   backed up — interface names + MACs differ
+                                   between machines. See the Phase 0.3 runbook
+                                   for the production host's static IP / gateway
+                                   / DNS as literal reference values.
+
+----- ORDER OF RESTORE ---------------------------------------
+
+1. Provision fresh VPS (Ubuntu 22.04 or 24.04).
+2. `apt install -y restic docker.io`. Use dpkg-selections.txt as reference for
+   anything else this host had.
+3. Bring `RESTIC_PASSWORD`, `B2_ACCOUNT_ID`, `B2_ACCOUNT_KEY` from your password
+   manager. With these you can decrypt this archive without needing the on-host
+   /etc/cid-backup.env first.
+4. Restore the SSH key (authorized_keys) BEFORE applying the sshd hardening
+   drop-in, otherwise you'll get locked out.
+5. Restore /etc/fail2ban/ then `systemctl enable --now fail2ban`.
+6. Restore /etc/cid-backup.env and /etc/cron.d/cid-backup.
+7. Clone the phpserver repo, restore docker/.env, `docker compose up -d --build`.
+8. Restore openclaw stack so Caddy comes back; verify SSL works.
+9. From the running phpserver admin UI, restore the most recent db-* snapshot
+   for each database.
+
+Full step-by-step procedure: docs/disaster-recovery.md  (Phase 0.3).
+"""
 
 
 def _run_config_backup_job(job):
@@ -665,24 +763,32 @@ def _run_config_backup_job(job):
     if rc != 0:
         raise RuntimeError(f"dpkg --get-selections failed: {dpkg_err.strip()}")
 
-    # 2. Stage the dpkg list as a real file so it can be tarred alongside paths.
+    # 2. Stage dpkg list + two README files so they can be tarred alongside
+    #    the bind-mounted paths. We tar them via `-C <tmpdir>` so they land
+    #    at the top level of the archive (not buried under tmp/cidcfg-XXX/).
     import tempfile
     with tempfile.TemporaryDirectory(prefix="cidcfg-") as tmpdir:
-        dpkg_path = os.path.join(tmpdir, "dpkg-selections.txt")
-        with open(dpkg_path, "w") as f:
+        staged_names = ["RESTORE-NOTES.txt", "user-crontab-README.txt", "dpkg-selections.txt"]
+        with open(os.path.join(tmpdir, "RESTORE-NOTES.txt"), "w") as f:
+            f.write(_RESTORE_NOTES)
+        with open(os.path.join(tmpdir, "user-crontab-README.txt"), "w") as f:
+            f.write(_USER_CRONTAB_README)
+        with open(os.path.join(tmpdir, "dpkg-selections.txt"), "w") as f:
             f.write(dpkg_out)
 
         # Existence check for each source path — log missing ones but don't abort.
-        paths_to_tar = [dpkg_path]
-        missing = []
+        present, missing = [], []
         for p in CONFIG_BACKUP_PATHS:
-            if os.path.exists(p):
-                paths_to_tar.append(p)
-            else:
-                missing.append(p)
+            (present if os.path.exists(p) else missing).append(p)
 
-        # 3. Stream tar | restic backup --stdin --stdin-filename config.tar
-        tar_cmd = ["tar", "-c"] + paths_to_tar
+        # 3. tar with two -C anchors:
+        #    - tmpdir → READMEs + dpkg list show up at the top level
+        #    - /      → host-config/* tree appears (absolute paths would
+        #               otherwise be stripped to host-config/* anyway, but
+        #               this keeps the intent explicit)
+        tar_cmd = ["tar", "-c",
+                   "-C", tmpdir, *staged_names,
+                   "-C", "/", *[p.lstrip("/") for p in present]]
         backup_cmd = ["restic", "backup", "--stdin",
                       "--stdin-filename", "config.tar",
                       "--compression", "auto",
