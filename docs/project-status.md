@@ -176,6 +176,29 @@ This section captures the parts of the deployment that the *code* alone doesn't 
 - Only `bitcodata` (single admin). Hardcoded creds replaced with env-loaded bcrypt hash in `docker/.env`.
 - 2FA on the admin panel: **not implemented**. Was on the roadmap as a Phase 2.x item; deferred.
 
+### 5.6 Open audit residuals (carried over from archived `audit-findings.md`)
+
+The original audit (2026-05-14) catalogued 33 findings. Phase 1 closed 24 of them; Phase 1.5 / F-006/007/023 closed the remaining critical infra items. The following are **still open** and not tracked elsewhere — re-evaluate at resume:
+
+- **F-004 · Critical · DB dump + native-password hashes committed to repo.** `docker/database/all_databases.sql` (7.5 MB) and `docker/database/users_grants.sql` are both still in the working tree **and** in git history (initial commit `8fffd11`). The grants file leaks SHA1(SHA1(pw)) hashes for `dw_spy`, `opc_user`, `test`. Crackable on commodity GPU.
+  - **Fix:** purge from history with `git filter-repo --path docker/database --invert-paths`, force-push (destructive — coordinate with all clones). Rotate the three DB user passwords. Add `docker/database/` to `.gitignore`.
+  - **Caveat:** `dw_spy` was bound to the deleted `opc2` survey app, so likely moot. `opc_user` is still live (powers `opc.bitco.link`'s `opc_db`). Rotate at minimum.
+  - **Bonus item from the audit's "deferred" list:** what PII is actually inside `all_databases.sql`? If real respondent data, F-004 escalates from "leaked hashes" to "leaked personal data". Audit before purging history.
+
+- **F-005 partial · Medium · SFTP container still uses password auth.** The credential itself is fixed (now `${SFTP_PASSWORD}` from `docker/.env`, not in git), but `PASSWORD_ACCESS=true` remains on. Public-internet listener at `:2222`.
+  - **Fix:** flip to `PASSWORD_ACCESS=false`, mount an authorized_keys volume with the operator's pubkey, document the rotation in `docker/.env.example`.
+
+- **F-032 · Info · PHP 7.4 is EOL** (since 2022-11-28). Base image `php:7.4-fpm-bullseye` still in use. No upstream security patches for 3+ years.
+  - **Fix:** plan a 7.4 → 8.2 (or 8.3) migration as a separate work item. The admin codebase uses 7.4-isms (notice suppression, lax type juggling) that will need attention.
+
+- **F-033 · Info · PHPExcel deprecated.** **Resolved automatically** when `sites/opc2.bitco.link/` was deleted — PHPExcel only lived in `xls/` there. No action needed.
+
+- **Deferred review** (from audit's "deferred for follow-up" list): full review of `routing1.php` / `task1.php` / `phpfunc.php`. **Resolved automatically** — these files were under opc2, now deleted.
+
+- **Host Caddy config** — out of scope, runs in the separate `openclaw-caddy-1` container.
+
+Detail for each finding (impact, repro, original wording) lives at `docs/archive/audit-findings.md`.
+
 ---
 
 ## 6. Open questions — must answer before resuming Phase 0.3+
