@@ -62,10 +62,14 @@ function mysqlQuery(string $sql, bool $silent = true): string {
  *   2. Environment variable of the same name
  *   3. The supplied $default
  *
+ * If $rawDb is true, returns ONLY the DB override (or '' if no row /
+ * empty value). Used by the Settings UI to render the "what's actually
+ * overridden" field, distinct from the effective merged value.
+ *
  * The lookup table is loaded once per request and cached in static. The
  * CREATE TABLE is idempotent and runs once per request — cheap.
  */
-function setting(string $key, string $default = ''): string {
+function setting(string $key, string $default = '', bool $rawDb = false): string {
     static $cache = null;
     if ($cache === null) {
         $cache = [];
@@ -82,6 +86,9 @@ function setting(string $key, string $default = ''): string {
             $parts = explode("\t", $line, 2);
             if (count($parts) === 2) $cache[$parts[0]] = $parts[1];
         }
+    }
+    if ($rawDb) {
+        return (isset($cache[$key]) && $cache[$key] !== '') ? $cache[$key] : '';
     }
     if (isset($cache[$key]) && $cache[$key] !== '') return $cache[$key];
     $env = getenv($key);
