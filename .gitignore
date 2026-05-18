@@ -22,6 +22,8 @@ sites/opc.bitco.link/public/admin/data/backup-jobs.json
 sites/opc.bitco.link/public/admin/data/backup-state.json
 # Restore-drill history — operational state, appended at each drill run.
 sites/opc.bitco.link/public/admin/data/drill-history.json
+# System metrics rolling buffer — runtime-written every 5 min by metrics.php.
+sites/opc.bitco.link/public/admin/data/metrics.json
 
 # Agent config files (not part of the stack)
 SOUL.md
