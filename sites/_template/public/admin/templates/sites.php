@@ -4,10 +4,10 @@
  */
 require_once __DIR__ . '/../_lib.php';
 
-// Public IP shown in DNS instructions. Set SITE_PUBLIC_IP in docker/.env
-// per deployment; falls back to a placeholder so the UI never embeds a
-// stale literal.
-$publicIp = getenv('SITE_PUBLIC_IP') ?: 'YOUR.SERVER.IP';
+// Public IP shown in DNS instructions. Overridable via /admin/?page=settings
+// (writes opc_db.site_settings); falls back to SITE_PUBLIC_IP env var; falls
+// back to placeholder so the UI never embeds a stale literal.
+$publicIp = setting('SITE_PUBLIC_IP', 'YOUR.SERVER.IP');
 
 // Scan site directories (sites are at /var/www/sites/*)
 $sitesBase = '/var/www/sites';

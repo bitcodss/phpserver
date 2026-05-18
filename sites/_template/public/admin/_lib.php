@@ -55,3 +55,36 @@ function mysqlQuery(string $sql, bool $silent = true): string {
     if (!$r['ok']) return '';
     return (string)($r['json']['output'] ?? '');
 }
+
+/**
+ * Read a runtime-overridable setting. Lookup order:
+ *   1. DB row in opc_db.site_settings (if non-empty)
+ *   2. Environment variable of the same name
+ *   3. The supplied $default
+ *
+ * The lookup table is loaded once per request and cached in static. The
+ * CREATE TABLE is idempotent and runs once per request — cheap.
+ */
+function setting(string $key, string $default = ''): string {
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        mysqlExec(
+            "CREATE TABLE IF NOT EXISTS opc_db.site_settings ("
+            . "`key` VARCHAR(64) NOT NULL PRIMARY KEY,"
+            . "`value` TEXT NULL,"
+            . "`updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            . ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+        );
+        $out = mysqlQuery("SELECT `key`,`value` FROM opc_db.site_settings;");
+        foreach (explode("\n", $out) as $line) {
+            if ($line === '') continue;
+            $parts = explode("\t", $line, 2);
+            if (count($parts) === 2) $cache[$parts[0]] = $parts[1];
+        }
+    }
+    if (isset($cache[$key]) && $cache[$key] !== '') return $cache[$key];
+    $env = getenv($key);
+    if ($env !== false && $env !== '') return (string)$env;
+    return $default;
+}

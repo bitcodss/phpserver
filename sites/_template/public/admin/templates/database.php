@@ -95,7 +95,7 @@ $upHours = isset($status['Uptime']) ? round($status['Uptime'] / 3600, 1) : 'N/A'
     <a href="?page=database&tab=databases" style="padding:12px 24px;text-decoration:none;font-weight:600;border-bottom:2px solid <?= $tab === 'databases' ? 'var(--accent)' : 'transparent' ?>;color:<?= $tab === 'databases' ? 'var(--accent)' : 'var(--muted)' ?>;margin-bottom:-2px">Databases</a>
     <a href="?page=database&tab=users" style="padding:12px 24px;text-decoration:none;font-weight:600;border-bottom:2px solid <?= $tab === 'users' ? 'var(--accent)' : 'transparent' ?>;color:<?= $tab === 'users' ? 'var(--accent)' : 'var(--muted)' ?>;margin-bottom:-2px">Database Users</a>
     <?php
-        $pmaUrl = getenv('PMA_PUBLIC_URL');
+        $pmaUrl = setting('PMA_PUBLIC_URL', '');
         if (!$pmaUrl) {
             $host = $_SERVER['HTTP_HOST'] ?? '';
             $pmaUrl = $host ? "https://pma." . preg_replace('/:\d+$/', '', $host) : '#';
