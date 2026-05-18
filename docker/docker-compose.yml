@@ -41,7 +41,7 @@ services:
     container_name: cid-nginx
     restart: unless-stopped
     ports:
-      - "9080:80"
+      - "${NGINX_BIND:-0.0.0.0}:9080:80"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
@@ -82,7 +82,7 @@ services:
     container_name: cid-phpmyadmin
     restart: unless-stopped
     ports:
-      - "9081:80"
+      - "${PMA_BIND:-0.0.0.0}:9081:80"
     environment:
       PMA_HOST: mariadb
       PMA_PORT: 3306
