@@ -1,0 +1,13 @@
+{
+    "domain": "{{DOMAIN}}",
+    "label": "{{LABEL}}",
+    "description": "{{DESCRIPTION}}",
+    "created": "{{CREATED}}",
+    "php": "7.4",
+    "docroot": "/var/www/sites/{{DOMAIN}}/public",
+    "database": {
+        "database": "{{DB_NAME}}",
+        "user": "{{DB_USER}}"
+    },
+    "ssl": "auto (Caddy)"
+}

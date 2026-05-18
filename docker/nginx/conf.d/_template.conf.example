@@ -1,0 +1,76 @@
+server {
+    listen 80;
+    server_name {{DOMAIN}};
+
+    root /var/www/sites/{{DOMAIN}}/public;
+    index index.php index.html;
+
+    # Logging
+    access_log /var/log/nginx/{{DOMAIN}}.access.log main;
+    error_log /var/log/nginx/{{DOMAIN}}.error.log warn;
+
+    # Rate limiting (general site-wide; admin POSTs throttled tighter below)
+    limit_req zone=general burst=20 nodelay;
+
+    # 8G firewall — block requests flagged by _8g.conf's detection maps
+    # (bad UAs, malicious query strings / URIs, dangerous HTTP methods).
+    if ($block_all) { return 403; }
+
+    # Security: deny access to hidden files
+    location ~ /\. {
+        deny all;
+        return 404;
+    }
+
+    # Security: deny access to sensitive files
+    location ~* \.(env|git|htaccess|htpasswd|ini|log|sh|sql|bak|conf|test|orig|old)$ {
+        deny all;
+        return 404;
+    }
+
+    # Hide admin metrics data store (web-served but not meant to be public)
+    location ^~ /admin/data/ { deny all; return 404; }
+
+    # Tighter throttle for the admin login (POST to /admin/)
+    location = /admin/ {
+        limit_req zone=login burst=5 nodelay;
+        try_files $uri $uri/ /admin/index.php?$query_string;
+    }
+
+    # PHP handling
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+
+        # Security
+        fastcgi_param PHP_VALUE "open_basedir=/var/www/sites:/tmp:/usr/share/php:/usr/local/bin:/proc:/var/cid-restores";
+        fastcgi_hide_header X-Powered-By;
+
+        # Timeouts
+        fastcgi_connect_timeout 60;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+    }
+
+    # Static files caching
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff2?|ttf|svg|webp)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # Default location
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # Deny access to PHP-FPM status
+    location ~ ^/(fpm-status|fpm-ping)$ {
+        deny all;
+    }
+}
