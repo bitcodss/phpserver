@@ -94,7 +94,14 @@ $upHours = isset($status['Uptime']) ? round($status['Uptime'] / 3600, 1) : 'N/A'
 <div style="display:flex;gap:0;margin-bottom:24px;border-bottom:2px solid var(--border)">
     <a href="?page=database&tab=databases" style="padding:12px 24px;text-decoration:none;font-weight:600;border-bottom:2px solid <?= $tab === 'databases' ? 'var(--accent)' : 'transparent' ?>;color:<?= $tab === 'databases' ? 'var(--accent)' : 'var(--muted)' ?>;margin-bottom:-2px">Databases</a>
     <a href="?page=database&tab=users" style="padding:12px 24px;text-decoration:none;font-weight:600;border-bottom:2px solid <?= $tab === 'users' ? 'var(--accent)' : 'transparent' ?>;color:<?= $tab === 'users' ? 'var(--accent)' : 'var(--muted)' ?>;margin-bottom:-2px">Database Users</a>
-    <a href="https://db-opc.bitco.link" target="_blank" style="padding:12px 24px;text-decoration:none;font-weight:600;color:var(--muted);margin-bottom:-2px">phpMyAdmin ↗</a>
+    <?php
+        $pmaUrl = getenv('PMA_PUBLIC_URL');
+        if (!$pmaUrl) {
+            $host = $_SERVER['HTTP_HOST'] ?? '';
+            $pmaUrl = $host ? "https://pma." . preg_replace('/:\d+$/', '', $host) : '#';
+        }
+    ?>
+    <a href="<?= htmlspecialchars($pmaUrl, ENT_QUOTES) ?>" target="_blank" style="padding:12px 24px;text-decoration:none;font-weight:600;color:var(--muted);margin-bottom:-2px">phpMyAdmin ↗</a>
 </div>
 
 <?php if ($tab === 'databases'): ?>

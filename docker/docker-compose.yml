@@ -29,6 +29,8 @@ services:
       OPC2_DB_PASSWORD: ${OPC2_DB_PASSWORD}
       OPC2_STATUS_TOKEN: ${OPC2_STATUS_TOKEN}
       OPC2_RAWDATA_TOKEN: ${OPC2_RAWDATA_TOKEN}
+      SITE_PUBLIC_IP: ${SITE_PUBLIC_IP:-}
+      PMA_PUBLIC_URL: ${PMA_PUBLIC_URL:-}
     depends_on:
       - mariadb
       - redis

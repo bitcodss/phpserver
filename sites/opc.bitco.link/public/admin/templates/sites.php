@@ -4,6 +4,11 @@
  */
 require_once __DIR__ . '/../_lib.php';
 
+// Public IP shown in DNS instructions. Set SITE_PUBLIC_IP in docker/.env
+// per deployment; falls back to a placeholder so the UI never embeds a
+// stale literal.
+$publicIp = getenv('SITE_PUBLIC_IP') ?: 'YOUR.SERVER.IP';
+
 // Scan site directories (sites are at /var/www/sites/*)
 $sitesBase = '/var/www/sites';
 $existingSites = [];
@@ -101,7 +106,7 @@ if ($userRaw !== '') $userList = array_filter(array_map('trim', explode("\n", tr
         <li>Click <strong>"+ Add New Site"</strong> above</li>
         <li>Fill in domain, name, description, and database options</li>
         <li>The system will: create directory, Nginx vhost, Caddy route</li>
-        <li><strong>Add DNS A record:</strong> <code>your-domain</code> → <code>139.59.119.101</code></li>
+        <li><strong>Add DNS A record:</strong> <code>your-domain</code> → <code><?= htmlspecialchars($publicIp, ENT_QUOTES) ?></code></li>
         <li>Caddy auto-provisions SSL once DNS resolves</li>
     </ol>
 </div>
@@ -134,7 +139,7 @@ if ($userRaw !== '') $userList = array_filter(array_map('trim', explode("\n", tr
                     <input type="checkbox" id="newEnableSsl" checked style="width:20px;height:20px;accent-color:var(--accent)">
                     <span>Auto SSL (Let's Encrypt via Caddy)</span>
                 </label>
-                <small style="color:var(--muted)">DNS A record ต้องชี้มาที่ 139.59.119.101 ก่อน</small>
+                <small style="color:var(--muted)">DNS A record ต้องชี้มาที่ <?= htmlspecialchars($publicIp, ENT_QUOTES) ?> ก่อน</small>
             </div>
         </div>
 
@@ -285,7 +290,7 @@ async function addSite() {
         } else if (r.ssl) {
             msg += `<strong>SSL:</strong> ⚠️ ${r.ssl}<br>`;
         }
-        msg += `<strong>DNS:</strong> Add A record: <code>${domain}</code> → <code>139.59.119.101</code>`;
+        msg += `<strong>DNS:</strong> Add A record: <code>${domain}</code> → <code><?= htmlspecialchars($publicIp, ENT_QUOTES) ?></code>`;
         if (r.database) {
             msg += `<br><br><strong>Database:</strong> <code>${r.database.database}</code>`;
             if (r.database.user) msg += `<br><strong>User:</strong> <code>${r.database.user}</code> / <code>${r.database.password}</code>`;

@@ -15,13 +15,6 @@ if (file_exists($confPath)) {
     exit;
 }
 
-// Fallback: check the main opc.bitco.link config
-$mainConf = "/etc/nginx/conf.d/opc.bitco.link.conf";
-if (file_exists($mainConf) && $domain === 'opc.bitco.link') {
-    echo json_encode(['ok' => true, 'config' => file_get_contents($mainConf)]);
-    exit;
-}
-
 // Try to read site.json instead
 $siteJson = "/var/www/sites/$domain/site.json";
 if (file_exists($siteJson)) {
