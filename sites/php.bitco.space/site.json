@@ -1,0 +1,14 @@
+{
+    "domain": "php.bitco.space",
+    "label": "PHP Server",
+    "description": "Main PHP application & Admin Dashboard",
+    "created": "2026-05-19 00:00:00",
+    "php": "7.4",
+    "docroot": "/var/www/sites/php.bitco.space/public",
+    "database": {
+        "database": "opc_db",
+        "user": "opc_user",
+        "password": "OpcUser2026!"
+    },
+    "ssl": "auto (Caddy)"
+}
