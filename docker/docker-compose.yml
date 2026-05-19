@@ -114,8 +114,11 @@ services:
       - broker-socket:/run/broker
       # Backup engine: state JSON written by broker, read by admin UI.
       - ../sites/php.bitco.space/public/admin/data:/admin-data
-      # Site backups read this read-only.
-      - ../sites:/var/www/sites:ro
+      # Site folder writes (POST /site/create) + backup config reads.
+      - ../sites:/var/www/sites
+      # nginx conf.d writes (POST /site/create generates vhost here);
+      # cid-nginx reads the same dir read-only.
+      - ./nginx/conf.d:/etc/nginx/conf.d
       # Restore + download staging (shared rw with cid-php74).
       - /var/cid-restores:/var/cid-restores
       # ---- Config-backup sources (read-only) ----

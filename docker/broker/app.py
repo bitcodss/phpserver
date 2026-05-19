@@ -35,6 +35,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -177,6 +178,93 @@ def container_logs():
 def nginx_reload():
     rc, out, err = _run(["docker", "exec", "cid-nginx", "nginx", "-s", "reload"])
     return jsonify({"ok": rc == 0, "output": (out or err).strip(), "rc": rc})
+
+
+_DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$')
+_SITE_TEMPLATED_FILES = ("site.json", "public/index.php")
+_SITES_ROOT = Path("/var/www/sites")
+_NGINX_CONF_DIR = Path("/etc/nginx/conf.d")
+_NGINX_VHOST_TEMPLATE = _NGINX_CONF_DIR / "_template.conf.example"
+
+
+@app.post("/site/create")
+def site_create():
+    """Create a new site folder from /var/www/sites/_template/ and write the
+    nginx vhost from _template.conf.example. Validates inputs, refuses to
+    overwrite existing sites, sets ownership to match the parent dir so the
+    host operator can edit + nginx can read."""
+    data = request.get_json(silent=True) or {}
+    domain = str(data.get("domain", "")).strip().lower()
+    if not _DOMAIN_RE.match(domain):
+        return _err("invalid domain")
+    label       = str(data.get("label") or domain)
+    description = str(data.get("description") or f"PHP site for {domain}")
+    db_name     = str(data.get("db_name") or "")
+    db_user     = str(data.get("db_user") or "")
+    short_name  = str(data.get("short_name") or domain.split(".")[0].upper())
+
+    tmpl = _SITES_ROOT / "_template"
+    site = _SITES_ROOT / domain
+    nginx_target = _NGINX_CONF_DIR / f"{domain}.conf"
+    if not tmpl.exists():
+        return _err("template not found")
+    if site.exists():
+        return _err(f"site {domain} already exists")
+    if nginx_target.exists():
+        return _err(f"vhost {domain}.conf already exists")
+    if not _NGINX_VHOST_TEMPLATE.exists():
+        return _err("nginx vhost template not found")
+
+    placeholders = {
+        "{{DOMAIN}}":      domain,
+        "{{LABEL}}":       label,
+        "{{DESCRIPTION}}": description,
+        "{{DB_NAME}}":     db_name,
+        "{{DB_USER}}":     db_user,
+        "{{SHORT_NAME}}":  short_name,
+        "{{CREATED}}":     datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+
+    def _substitute(text: str) -> str:
+        for k, v in placeholders.items():
+            text = text.replace(k, v)
+        return text
+
+    try:
+        shutil.copytree(tmpl, site)
+        (site / "site.json.template").rename(site / "site.json")
+        for relpath in _SITE_TEMPLATED_FILES:
+            f = site / relpath
+            f.write_text(_substitute(f.read_text(encoding="utf-8")), encoding="utf-8")
+        nginx_target.write_text(_substitute(_NGINX_VHOST_TEMPLATE.read_text(encoding="utf-8")), encoding="utf-8")
+    except Exception as e:
+        # Best-effort cleanup so a partial failure doesn't leave debris
+        # that would block a retry.
+        try:
+            if site.exists(): shutil.rmtree(site)
+        except OSError:
+            pass
+        try:
+            if nginx_target.exists(): nginx_target.unlink()
+        except OSError:
+            pass
+        return _err(f"create failed: {e}", code=500)
+
+    # Match the parent dir's ownership so the host operator can edit
+    # via SFTP/SSH and nginx (any uid) can read via world-rx on dirs.
+    parent_stat = _SITES_ROOT.stat()
+    uid, gid = parent_stat.st_uid, parent_stat.st_gid
+    for p in [site, *site.rglob("*")]:
+        try:
+            os.chown(p, uid, gid)
+        except OSError:
+            pass
+    try:
+        os.chown(nginx_target, uid, gid)
+    except OSError:
+        pass
+
+    return jsonify({"ok": True, "domain": domain, "path": str(site)})
 
 
 @app.post("/caddy/route")
