@@ -9,7 +9,16 @@
 # Override METRICS_FILE in the env if the repo lives elsewhere.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-METRICS_FILE="${METRICS_FILE:-$SCRIPT_DIR/../sites/opc.bitco.link/public/admin/data/metrics.json}"
+# Pick the most-recently-modified non-template site folder under sites/.
+# During a rename migration, the new folder is freshly mtimed (cp -r
+# stamps it) and wins over the old one; in steady state with one site,
+# there's only one option anyway. Folder mtime is stable because nested
+# file writes don't propagate up. Override via METRICS_FILE env if a
+# host runs multiple non-template sites and this heuristic doesn't fit.
+SITE_DIR="$(find "$SCRIPT_DIR/../sites" -maxdepth 1 -mindepth 1 -type d \
+            ! -name '_*' -printf '%T@ %p\n' | sort -rn | head -1 \
+            | cut -d' ' -f2-)"
+METRICS_FILE="${METRICS_FILE:-$SITE_DIR/public/admin/data/metrics.json}"
 mkdir -p "$(dirname "$METRICS_FILE")"
 
 # Collect metrics

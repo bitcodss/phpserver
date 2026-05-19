@@ -17,13 +17,14 @@ Thumbs.db
 # Memory (agent-specific)
 memory/
 
-# Backup engine runtime state (UI-edited; bootstrapped by broker from .example)
-sites/opc.bitco.link/public/admin/data/backup-jobs.json
-sites/opc.bitco.link/public/admin/data/backup-state.json
+# Per-site runtime state (UI/broker-edited; bootstrapped by broker from .example).
+# Globbed so renames don't require .gitignore edits.
+sites/*/public/admin/data/backup-jobs.json
+sites/*/public/admin/data/backup-state.json
 # Restore-drill history — operational state, appended at each drill run.
-sites/opc.bitco.link/public/admin/data/drill-history.json
-# System metrics rolling buffer — runtime-written every 5 min by metrics.php.
-sites/opc.bitco.link/public/admin/data/metrics.json
+sites/*/public/admin/data/drill-history.json
+# System metrics rolling buffer — runtime-written every 5 min by collect_metrics.sh.
+sites/*/public/admin/data/metrics.json
 
 # Agent config files (not part of the stack)
 SOUL.md

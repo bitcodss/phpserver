@@ -113,7 +113,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - broker-socket:/run/broker
       # Backup engine: state JSON written by broker, read by admin UI.
-      - ../sites/opc.bitco.link/public/admin/data:/admin-data
+      - ../sites/php.bitco.space/public/admin/data:/admin-data
       # Site backups read this read-only.
       - ../sites:/var/www/sites:ro
       # Restore + download staging (shared rw with cid-php74).
